@@ -30,6 +30,7 @@ struct Overview {
     total_photos: i64,
     kept: i64,
     raw_heic: i64,
+    shiori_count: i64,
     years: Vec<YearCount>,
     roots: Vec<String>,
     scanning: bool,
@@ -76,6 +77,9 @@ fn get_overview(state: State<AppState>) -> CmdResult<Overview> {
     let kept: i64 = conn
         .query_row("SELECT COUNT(*) FROM triage WHERE decision='keep'", [], |r| r.get(0))
         .map_err(err_str)?;
+    let shiori_count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM shiori", [], |r| r.get(0))
+        .map_err(err_str)?;
     let mut stmt = conn
         .prepare(
             "SELECT substr(taken_at,1,4) y, COUNT(*) FROM photos
@@ -99,6 +103,7 @@ fn get_overview(state: State<AppState>) -> CmdResult<Overview> {
         total_photos: total,
         kept,
         raw_heic,
+        shiori_count,
         years,
         roots,
         scanning: state.scanning.load(Ordering::Relaxed),
@@ -215,6 +220,96 @@ fn next_batch(state: State<AppState>) -> CmdResult<Option<BatchOut>> {
     }))
 }
 
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct ShioriOut {
+    id: i64,
+    title: String,
+    note: String,
+    taken_label: String,
+    created_at: String,
+    photos: Vec<PhotoOut>,
+}
+
+#[tauri::command]
+fn create_shiori(
+    state: State<AppState>,
+    title: String,
+    note: String,
+    taken_label: String,
+    photo_ids: Vec<i64>,
+) -> CmdResult<i64> {
+    if photo_ids.is_empty() || photo_ids.len() > 3 {
+        return Err("写真は1〜3枚選んでください".into());
+    }
+    let conn = state.conn.lock().map_err(err_str)?;
+    db::create_shiori(&conn, title.trim(), note.trim(), &taken_label, &photo_ids).map_err(err_str)
+}
+
+fn shiori_photos(
+    conn: &rusqlite::Connection,
+    data_dir: &PathBuf,
+    shiori_id: i64,
+) -> CmdResult<Vec<PhotoOut>> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT p.id, p.rel_path, p.taken_at, p.camera_model, p.thumb_path
+             FROM shiori_photos sp JOIN photos p ON p.id = sp.photo_id
+             WHERE sp.shiori_id = ?1 ORDER BY sp.position",
+        )
+        .map_err(err_str)?;
+    let rows = stmt
+        .query_map([shiori_id], |r| {
+            let rel: String = r.get(1)?;
+            let (folder, file_name) = match rel.rsplit_once('/') {
+                Some((dir, name)) => (
+                    dir.rsplit_once('/').map(|(_, f)| f).unwrap_or(dir).to_string(),
+                    name.to_string(),
+                ),
+                None => (String::new(), rel.clone()),
+            };
+            let thumb: Option<String> = r.get(4)?;
+            Ok(PhotoOut {
+                id: r.get(0)?,
+                file_name,
+                folder,
+                taken_at: r.get(2)?,
+                camera_model: r.get(3)?,
+                thumb_abs: thumb.map(|t| data_dir.join(t).to_string_lossy().to_string()),
+            })
+        })
+        .map_err(err_str)?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(err_str)
+}
+
+#[tauri::command]
+fn list_shiori(state: State<AppState>) -> CmdResult<Vec<ShioriOut>> {
+    let conn = state.conn.lock().map_err(err_str)?;
+    let heads: Vec<(i64, String, String, String, String)> = {
+        let mut stmt = conn
+            .prepare("SELECT id, title, note, taken_label, created_at FROM shiori ORDER BY created_at DESC, id DESC")
+            .map_err(err_str)?;
+        let it = stmt
+            .query_map([], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+            })
+            .map_err(err_str)?;
+        it.collect::<Result<Vec<_>, _>>().map_err(err_str)?
+    };
+    let mut out = Vec::with_capacity(heads.len());
+    for (id, title, note, taken_label, created_at) in heads {
+        out.push(ShioriOut {
+            id,
+            title,
+            note,
+            taken_label,
+            created_at,
+            photos: shiori_photos(&conn, &state.data_dir, id)?,
+        });
+    }
+    Ok(out)
+}
+
 #[tauri::command]
 fn triage_photo(state: State<AppState>, photo_id: i64, decision: String) -> CmdResult<()> {
     if !["keep", "later", "skip"].contains(&decision.as_str()) {
@@ -275,7 +370,9 @@ pub fn run() {
             start_scan,
             cancel_scan,
             next_batch,
-            triage_photo
+            triage_photo,
+            create_shiori,
+            list_shiori
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

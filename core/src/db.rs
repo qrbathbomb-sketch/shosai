@@ -81,7 +81,49 @@ fn migrate(conn: &Connection) -> Result<()> {
             "#,
         )?;
     }
+    if version < 3 {
+        conn.execute_batch(
+            r#"
+            -- しおり: 写真1〜3枚+一言から作る小さな完成作品
+            CREATE TABLE IF NOT EXISTS shiori (
+                id INTEGER PRIMARY KEY,
+                title TEXT NOT NULL,
+                note TEXT NOT NULL DEFAULT '',
+                taken_label TEXT NOT NULL DEFAULT '',  -- 「2011年10月9日」等の表示用
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            CREATE TABLE IF NOT EXISTS shiori_photos (
+                shiori_id INTEGER NOT NULL REFERENCES shiori(id),
+                photo_id INTEGER NOT NULL REFERENCES photos(id),
+                position INTEGER NOT NULL,
+                PRIMARY KEY (shiori_id, photo_id)
+            );
+
+            PRAGMA user_version = 3;
+            "#,
+        )?;
+    }
     Ok(())
+}
+
+pub fn create_shiori(
+    conn: &Connection,
+    title: &str,
+    note: &str,
+    taken_label: &str,
+    photo_ids: &[i64],
+) -> Result<i64> {
+    conn.execute(
+        "INSERT INTO shiori (title, note, taken_label) VALUES (?1, ?2, ?3)",
+        params![title, note, taken_label],
+    )?;
+    let id = conn.last_insert_rowid();
+    let mut stmt =
+        conn.prepare("INSERT INTO shiori_photos (shiori_id, photo_id, position) VALUES (?1, ?2, ?3)")?;
+    for (i, pid) in photo_ids.iter().enumerate() {
+        stmt.execute(params![id, pid, i as i64])?;
+    }
+    Ok(id)
 }
 
 pub fn set_triage(conn: &Connection, photo_id: i64, decision: &str) -> Result<()> {

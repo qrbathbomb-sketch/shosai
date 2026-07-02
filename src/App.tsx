@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
@@ -8,6 +8,7 @@ type Overview = {
   totalPhotos: number;
   kept: number;
   rawHeic: number;
+  shioriCount: number;
   years: { year: string; count: number }[];
   roots: string[];
   scanning: boolean;
@@ -26,6 +27,15 @@ type Batch = {
   theme: string;
   title: string;
   subtitle: string;
+  photos: Photo[];
+};
+
+type Shiori = {
+  id: number;
+  title: string;
+  note: string;
+  takenLabel: string;
+  createdAt: string;
   photos: Photo[];
 };
 
@@ -51,7 +61,18 @@ const emptyScan: ScanInfo = {
   error: null,
 };
 
-type View = "loading" | "start" | "scanning" | "home" | "batch" | "focus" | "done";
+type View =
+  | "loading"
+  | "start"
+  | "scanning"
+  | "home"
+  | "batch"
+  | "focus"
+  | "compose"
+  | "shioriDone"
+  | "library"
+  | "shioriDetail"
+  | "done";
 
 function formatDate(takenAt: string | null): string {
   if (!takenAt) return "撮影日は不明";
@@ -61,16 +82,63 @@ function formatDate(takenAt: string | null): string {
   return `${y}年${m}月${d}日`;
 }
 
+/** 選んだ写真たちの日付から「2011年10月9日」「2011年10月」「2009年〜2013年」を作る */
+function takenLabelOf(photos: Photo[]): string {
+  const dates = photos.map((p) => p.takenAt).filter((t): t is string => !!t);
+  if (dates.length === 0) return "";
+  const days = [...new Set(dates.map((t) => t.slice(0, 10)))];
+  if (days.length === 1) return formatDate(dates[0]);
+  const months = [...new Set(dates.map((t) => t.slice(0, 7)))];
+  if (months.length === 1) {
+    const y = months[0].slice(0, 4);
+    const m = String(Number(months[0].slice(5, 7)));
+    return `${y}年${m}月`;
+  }
+  const years = [...new Set(dates.map((t) => t.slice(0, 4)))].sort();
+  return years.length === 1 ? `${years[0]}年` : `${years[0]}年〜${years[years.length - 1]}年`;
+}
+
+function thumbSrc(thumbAbs: string): string {
+  // devプレビュー(ブラウザ)ではhttp URLをそのまま使う
+  return thumbAbs.startsWith("http") ? thumbAbs : convertFileSrc(thumbAbs);
+}
+
+/** しおり本体の表示(一覧カードと詳細で共用)。品質最重視の箇所 */
+function ShioriCard({ shiori, large }: { shiori: Shiori; large?: boolean }) {
+  const n = shiori.photos.length;
+  return (
+    <article className={`shiori ${large ? "shiori-large" : ""} photos-${n}`}>
+      <div className="shiori-photos">
+        {shiori.photos.map((p, i) => (
+          <div className={`shiori-photo pos-${i}`} key={p.id}>
+            {p.thumbAbs && <img src={thumbSrc(p.thumbAbs)} alt="" />}
+          </div>
+        ))}
+      </div>
+      <div className="shiori-text">
+        {shiori.takenLabel && shiori.takenLabel !== shiori.title && (
+          <p className="shiori-date">{shiori.takenLabel}</p>
+        )}
+        <h3 className="shiori-title">{shiori.title}</h3>
+        {shiori.note && <p className="shiori-note">{shiori.note}</p>}
+      </div>
+    </article>
+  );
+}
+
 function App() {
   const [view, setView] = useState<View>("loading");
   const [overview, setOverview] = useState<Overview | null>(null);
   const [scan, setScan] = useState<ScanInfo>(emptyScan);
   const [batch, setBatch] = useState<Batch | null>(null);
   const [focusIdx, setFocusIdx] = useState(0);
-  const [keptInBatch, setKeptInBatch] = useState(0);
+  const [keptPhotos, setKeptPhotos] = useState<Photo[]>([]);
+  const [selectedIds, setSelectedIds] = useState<number[]>([]);
+  const [note, setNote] = useState("");
+  const [lastShiori, setLastShiori] = useState<Shiori | null>(null);
+  const [library, setLibrary] = useState<Shiori[]>([]);
+  const [detail, setDetail] = useState<Shiori | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
-  const viewRef = useRef(view);
-  viewRef.current = view;
 
   const refreshOverview = useCallback(async (): Promise<Overview> => {
     const ov = await invoke<Overview>("get_overview");
@@ -78,7 +146,6 @@ function App() {
     return ov;
   }, []);
 
-  // 起動時: 状態を見て画面を決める
   useEffect(() => {
     (async () => {
       try {
@@ -93,7 +160,6 @@ function App() {
     })();
   }, [refreshOverview]);
 
-  // 走査イベントの購読
   useEffect(() => {
     const unlisteners: Promise<() => void>[] = [
       listen<Record<string, any>>("scan-event", (ev) => {
@@ -107,8 +173,7 @@ function App() {
             s.years.includes(p.FoundYear.year) ? s : { ...s, years: [...s.years, p.FoundYear.year] }
           );
         } else if ("Finished" in p) {
-          const st = p.Finished.stats;
-          setScan((s) => ({ ...s, filesSeen: st.files_seen }));
+          setScan((s) => ({ ...s, filesSeen: p.Finished.stats.files_seen }));
         }
       }),
       listen<{ done: number; total: number }>("thumb-progress", (ev) => {
@@ -154,7 +219,7 @@ function App() {
     }
     setBatch(b);
     setFocusIdx(0);
-    setKeptInBatch(0);
+    setKeptPhotos([]);
     setView("batch");
   };
 
@@ -167,13 +232,67 @@ function App() {
       setNotice(String(e));
       return;
     }
-    if (decision === "keep") setKeptInBatch((n) => n + 1);
+    const kept = decision === "keep" ? [...keptPhotos, photo] : keptPhotos;
+    if (decision === "keep") setKeptPhotos(kept);
     if (focusIdx + 1 < batch.photos.length) {
       setFocusIdx(focusIdx + 1);
     } else {
       await refreshOverview();
-      setView("done");
+      if (kept.length > 0) {
+        setSelectedIds(kept.slice(0, 3).map((p) => p.id));
+        setNote("");
+        setView("compose");
+      } else {
+        setView("done");
+      }
     }
+  };
+
+  const toggleSelect = (id: number) => {
+    setSelectedIds((ids) => {
+      if (ids.includes(id)) return ids.filter((x) => x !== id);
+      if (ids.length >= 3) return ids; // 3枚まで
+      return [...ids, id];
+    });
+  };
+
+  const makeShiori = async () => {
+    if (!batch || selectedIds.length === 0) return;
+    const chosen = keptPhotos.filter((p) => selectedIds.includes(p.id));
+    // タイトルは本人が付けたフォルダ名を最優先(最も本人の言葉に近い)
+    const folders = chosen.map((p) => p.folder).filter(Boolean);
+    const folderMode = folders.sort(
+      (a, b) =>
+        folders.filter((f) => f === b).length - folders.filter((f) => f === a).length
+    )[0];
+    const title = folderMode || batch.subtitle || batch.title;
+    const takenLabel = takenLabelOf(chosen);
+    try {
+      const id = await invoke<number>("create_shiori", {
+        title,
+        note,
+        takenLabel,
+        photoIds: chosen.map((p) => p.id),
+      });
+      setLastShiori({
+        id,
+        title,
+        note: note.trim(),
+        takenLabel,
+        createdAt: "",
+        photos: chosen,
+      });
+      await refreshOverview();
+      setView("shioriDone");
+    } catch (e) {
+      setNotice(String(e));
+    }
+  };
+
+  const openLibrary = async () => {
+    const list = await invoke<Shiori[]>("list_shiori");
+    setLibrary(list);
+    setView("library");
   };
 
   // ---------- 画面 ----------
@@ -276,6 +395,15 @@ function App() {
             開けてみる
           </button>
         </section>
+        {ov && ov.shioriCount > 0 && (
+          <section className="card library-card" onClick={openLibrary}>
+            <div>
+              <h2 className="section-title">書斎の棚</h2>
+              <p className="small gray">これまでに作ったしおり {ov.shioriCount}枚</p>
+            </div>
+            <button className="btn outline">ひらく</button>
+          </section>
+        )}
         {notice && <p className="notice">{notice}</p>}
         <section className="home-foot">
           {ov && ov.rawHeic > 0 && (
@@ -357,13 +485,140 @@ function App() {
     );
   }
 
+  if (view === "compose" && batch) {
+    return (
+      <main className="page">
+        <header className="batch-head">
+          <h2 className="section-title">しおりをつくる</h2>
+          <p className="small gray">
+            残したい写真から{keptPhotos.length > 3 ? "3枚まで" : ""}選んで、ひとこと添えると、1枚のしおりになります。
+          </p>
+        </header>
+        <div className="grid compose-grid">
+          {keptPhotos.map((p) => {
+            const sel = selectedIds.includes(p.id);
+            return (
+              <figure
+                className={`grid-item selectable ${sel ? "selected" : ""}`}
+                key={p.id}
+                onClick={() => toggleSelect(p.id)}
+              >
+                {p.thumbAbs ? (
+                  <img src={convertFileSrc(p.thumbAbs)} alt={p.fileName} />
+                ) : (
+                  <div className="noimg">画像なし</div>
+                )}
+                {sel && <span className="sel-mark">{selectedIds.indexOf(p.id) + 1}</span>}
+              </figure>
+            );
+          })}
+        </div>
+        <div className="note-row">
+          <label className="note-label" htmlFor="note">
+            ひとこと添えますか？　<span className="gray small">(なくても大丈夫です)</span>
+          </label>
+          <input
+            id="note"
+            className="note-input"
+            type="text"
+            value={note}
+            maxLength={60}
+            placeholder="例: 屋台の匂いまで思い出す"
+            onChange={(e) => setNote(e.target.value)}
+          />
+        </div>
+        {notice && <p className="notice">{notice}</p>}
+        <div className="actions-row">
+          <button
+            className="btn primary big"
+            disabled={selectedIds.length === 0}
+            onClick={makeShiori}
+          >
+            しおりにする
+          </button>
+          <button className="btn ghost" onClick={() => setView("done")}>
+            今回はつくらない
+          </button>
+        </div>
+      </main>
+    );
+  }
+
+  if (view === "shioriDone" && lastShiori) {
+    return (
+      <main className="page center-page">
+        <h2 className="section-title">しおりができました</h2>
+        <ShioriCard shiori={lastShiori} large />
+        <p className="small gray">書斎の棚に収まりました。</p>
+        <div className="actions-row">
+          <button className="btn outline" onClick={openLibrary}>
+            書斎の棚を見る
+          </button>
+          <button className="btn primary" onClick={startBatch}>
+            もう一束みる
+          </button>
+          <button className="btn ghost" onClick={() => setView("home")}>
+            今日はここまで
+          </button>
+        </div>
+      </main>
+    );
+  }
+
+  if (view === "library") {
+    return (
+      <main className="page">
+        <header className="batch-head">
+          <h2 className="section-title">書斎の棚</h2>
+          <p className="small gray">{library.length}枚のしおり</p>
+        </header>
+        {library.length === 0 ? (
+          <p className="lead center">まだしおりがありません。「今日の発掘」から作れます。</p>
+        ) : (
+          <div className="library-grid">
+            {library.map((s) => (
+              <div
+                key={s.id}
+                className="library-item"
+                onClick={() => {
+                  setDetail(s);
+                  setView("shioriDetail");
+                }}
+              >
+                <ShioriCard shiori={s} />
+              </div>
+            ))}
+          </div>
+        )}
+        <div className="actions-row">
+          <button className="btn ghost" onClick={() => setView("home")}>
+            戻る
+          </button>
+        </div>
+      </main>
+    );
+  }
+
+  if (view === "shioriDetail" && detail) {
+    return (
+      <main className="page center-page">
+        <ShioriCard shiori={detail} large />
+        <div className="actions-row">
+          <button className="btn ghost" onClick={() => setView("library")}>
+            棚に戻る
+          </button>
+        </div>
+      </main>
+    );
+  }
+
   if (view === "done") {
     return (
       <main className="page center-page">
         <h2 className="section-title">今日の発掘はここまで</h2>
         <p className="lead">
-          {keptInBatch > 0
-            ? `${keptInBatch}枚を「残したい」に選びました。よい再会でしたね。`
+          {keptPhotos.length > 0
+            ? `${keptPhotos.length}枚を「残したい」にえらびました。`
             : "今日はぴんと来る写真がなかったようです。そういう日もあります。"}
         </p>
         <div className="actions-row">
@@ -381,4 +636,40 @@ function App() {
   return <main className="page center-page">…</main>;
 }
 
-export default App;
+/** 開発時のみ: ?preview=shiori でしおりの見た目を単体確認する */
+function ShioriPreview() {
+  const ph = (seed: number): Photo => ({
+    id: seed,
+    fileName: `p${seed}.jpg`,
+    folder: "秋祭り",
+    takenAt: "2011-10-09 14:00:00",
+    cameraModel: null,
+    thumbAbs: `https://picsum.photos/seed/${seed}/640/480`,
+  });
+  const mk = (id: number, n: number, note: string): Shiori => ({
+    id,
+    title: "2011年10月9日の秋祭り",
+    note,
+    takenLabel: "2011年10月9日",
+    createdAt: "",
+    photos: Array.from({ length: n }, (_, i) => ph(id * 10 + i)),
+  });
+  return (
+    <main className="page center-page" style={{ gap: 40 }}>
+      <ShioriCard shiori={mk(1, 1, "屋台の匂いまで思い出す")} large />
+      <div className="library-grid">
+        <ShioriCard shiori={mk(2, 2, "山車が来た瞬間")} />
+        <ShioriCard shiori={mk(3, 3, "")} />
+      </div>
+    </main>
+  );
+}
+
+function Root() {
+  if (import.meta.env.DEV && new URLSearchParams(window.location.search).get("preview") === "shiori") {
+    return <ShioriPreview />;
+  }
+  return <App />;
+}
+
+export default Root;
