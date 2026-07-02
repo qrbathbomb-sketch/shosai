@@ -1,0 +1,30 @@
+[package]
+name = "shosai-core"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "shosai_core"
+
+[dependencies]
+walkdir = "2"
+rayon = "1"
+rusqlite = { version = "0.32", features = ["bundled"] }
+kamadak-exif = "0.6"
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "tiff"] }
+blake3 = "1"
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = "2"
+little_exif = "0.6"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_Storage_FileSystem", "Win32_Foundation"] }
+
+[[bin]]
+name = "scan_cli"
+path = "src/bin/scan_cli.rs"
+
+[[bin]]
+name = "gen_test_photos"
+path = "src/bin/gen_test_photos.rs"
