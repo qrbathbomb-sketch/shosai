@@ -66,6 +66,30 @@ fn migrate(conn: &Connection) -> Result<()> {
             "#,
         )?;
     }
+    if version < 2 {
+        conn.execute_batch(
+            r#"
+            -- 3択トリアージ。写真1枚につき最新の判断のみ保持。
+            -- keep=残したい / later=あとで / skip=今回は違う
+            CREATE TABLE IF NOT EXISTS triage (
+                photo_id INTEGER PRIMARY KEY REFERENCES photos(id),
+                decision TEXT NOT NULL CHECK (decision IN ('keep','later','skip')),
+                decided_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+
+            PRAGMA user_version = 2;
+            "#,
+        )?;
+    }
+    Ok(())
+}
+
+pub fn set_triage(conn: &Connection, photo_id: i64, decision: &str) -> Result<()> {
+    conn.execute(
+        "INSERT INTO triage (photo_id, decision) VALUES (?1, ?2)
+         ON CONFLICT(photo_id) DO UPDATE SET decision=?2, decided_at=datetime('now')",
+        params![photo_id, decision],
+    )?;
     Ok(())
 }
 

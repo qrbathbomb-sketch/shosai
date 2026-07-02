@@ -3,6 +3,7 @@
 //! 安全原則: 元写真は読み取り専用。このクレートが書き込むのは
 //! アプリデータ領域(DB・サムネイル)とテストデータ生成先のみ。
 
+pub mod batch;
 pub mod db;
 pub mod exif_read;
 pub mod hash;

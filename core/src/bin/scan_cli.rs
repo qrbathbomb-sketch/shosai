@@ -19,6 +19,7 @@ fn main() {
     let mut data_dir = PathBuf::from("./shosai-data");
     let mut do_thumbs = false;
     let mut do_report = false;
+    let mut batch_rounds = 0usize;
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
@@ -28,6 +29,10 @@ fn main() {
             }
             "--thumbs" => do_thumbs = true,
             "--report" => do_report = true,
+            "--batch" => {
+                i += 1;
+                batch_rounds = args[i].parse().unwrap_or(1);
+            }
             other => {
                 eprintln!("unknown arg: {}", other);
                 std::process::exit(1);
@@ -76,6 +81,29 @@ fn main() {
 
     if do_report {
         report(&conn).expect("report failed");
+    }
+
+    // 発掘束の検証: 束を取得→全てskip扱い→次の束、を繰り返す
+    if batch_rounds > 0 {
+        let today = "2026-07-03"; // 「N年前の今月」テスト用に固定
+        for round in 1..=batch_rounds {
+            match shosai_core::batch::next_batch(&conn, today).expect("batch failed") {
+                Some(b) => {
+                    println!(
+                        "\n== 発掘束 {} : [{}] {} {} ({}枚) ==",
+                        round, b.theme, b.title, b.subtitle, b.photos.len()
+                    );
+                    for p in &b.photos {
+                        println!("  {} | {} | {}", p.taken_at.as_deref().unwrap_or("日付なし"), p.folder, p.file_name);
+                        db::set_triage(&conn, p.id, "skip").unwrap();
+                    }
+                }
+                None => {
+                    println!("\n== 発掘束 {} : 候補が尽きました ==", round);
+                    break;
+                }
+            }
+        }
     }
 }
 
