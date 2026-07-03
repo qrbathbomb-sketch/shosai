@@ -129,6 +129,23 @@ async function ensureRoot(): Promise<FileSystemDirectoryHandle | null> {
   return h;
 }
 
+/** ルートフォルダに今アクセスできるか(ドライブ切断・権限喪失の検知)。
+ *  権限プロンプトは出さない: メモリにハンドルが無ければ楽観的にtrueを返し、
+ *  実際の失敗は各操作(サムネ再生成/PDF)のエラーで穏やかに伝える。 */
+async function isRootConnected(): Promise<boolean> {
+  if (!rootHandle) return true;
+  try {
+    const perm = await (rootHandle as any).queryPermission?.({ mode: "read" });
+    if (perm === "denied") return false;
+    // 1件読めれば接続中とみなす(取り外し済みドライブはここで例外)
+    const it = (rootHandle as any).entries?.();
+    if (it) await it.next();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /** relPathの元ファイルを取得(読み取りのみ)。ドライブ/権限喪失時はnull */
 async function fileOf(rec: Pick<PhotoRec, "pathParts">): Promise<File | null> {
   const root = await ensureRoot();
@@ -667,13 +684,15 @@ export async function webCall<T>(cmd: string, args: Record<string, unknown>): Pr
       }
       const rootName = await metaGet<string>("rootName");
       const hasRoot = rootHandle != null || (await metaGet("rootHandle")) != null;
+      const roots =
+        hasRoot && rootName ? [{ name: rootName, connected: await isRootConnected() }] : [];
       return {
         totalPhotos,
         kept,
         rawHeic,
         shioriCount,
         years: [...yearsMap.entries()].sort().map(([year, count]) => ({ year, count })),
-        roots: hasRoot && rootName ? [rootName] : [],
+        roots,
         scanning,
       } as T;
     }

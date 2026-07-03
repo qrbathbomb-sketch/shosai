@@ -26,13 +26,20 @@ struct YearCount {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
+struct RootStatus {
+    name: String,       // ユーザーに見せる表示パス
+    connected: bool,    // 保存先(フォルダ/ドライブ)に今アクセスできるか
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 struct Overview {
     total_photos: i64,
     kept: i64,
     raw_heic: i64,
     shiori_count: i64,
     years: Vec<YearCount>,
-    roots: Vec<String>,
+    roots: Vec<RootStatus>,
     scanning: bool,
 }
 
@@ -95,7 +102,11 @@ fn get_overview(state: State<AppState>) -> CmdResult<Overview> {
         .map_err(err_str)?;
     let mut stmt = conn.prepare("SELECT display_path FROM roots ORDER BY added_at").map_err(err_str)?;
     let roots = stmt
-        .query_map([], |r| r.get::<_, String>(0))
+        .query_map([], |r| {
+            let name: String = r.get(0)?;
+            let connected = std::path::Path::new(&name).exists();
+            Ok(RootStatus { name, connected })
+        })
         .map_err(err_str)?
         .collect::<Result<Vec<_>, _>>()
         .map_err(err_str)?;

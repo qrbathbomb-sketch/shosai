@@ -185,6 +185,23 @@ body {
   padding: 10px 18px;
 }
 
+/* ドライブ切断の案内(不安を与えない穏やかな色) */
+.offline-card {
+  background: #f3ede0;
+  border-color: #d9cdb3;
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 18px;
+}
+
+.offline-title {
+  font-weight: 700;
+  margin: 0;
+  font-size: 1.05rem;
+}
+
 /* 走査画面 */
 .scan-count {
   font-size: 1.2rem;

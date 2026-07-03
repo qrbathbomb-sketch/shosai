@@ -17,7 +17,7 @@ type Overview = {
   rawHeic: number;
   shioriCount: number;
   years: { year: string; count: number }[];
-  roots: string[];
+  roots: { name: string; connected: boolean }[];
   scanning: boolean;
 };
 
@@ -532,6 +532,20 @@ function App() {
             </p>
           )}
         </header>
+        {ov && ov.roots.some((r) => !r.connected) && (
+          <section className="card offline-card">
+            <p className="offline-title">📀 写真の保存先が見つかりません</p>
+            <p className="small">
+              {ov.roots
+                .filter((r) => !r.connected)
+                .map((r) => r.name)
+                .join(" / ")}
+            </p>
+            <p className="small gray">
+              外付けドライブがつながっているか確認してください。書斎のしおりや「残したい」の記録は、そのまま安全に残っています。つなぎ直せば、また写真を見られます。
+            </p>
+          </section>
+        )}
         <section className="card hero-card">
           <h2 className="section-title">今日の発掘</h2>
           <p className="lead">眠っている写真の中から、今日の一束をお持ちします。</p>
@@ -572,7 +586,12 @@ function App() {
               RAW・HEIC形式の写真 {ov.rawHeic}枚は、今後の更新で対応します。
             </p>
           )}
-          <p className="small gray">読み取り済みの場所: {ov?.roots.join(" ・ ") || "なし"}</p>
+          <p className="small gray">
+            読み取り済みの場所:{" "}
+            {ov && ov.roots.length > 0
+              ? ov.roots.map((r) => `${r.name}${r.connected ? "" : "（未接続）"}`).join(" ・ ")
+              : "なし"}
+          </p>
           <button className="btn ghost" onClick={pickFolder}>
             写真の場所を追加する
           </button>
