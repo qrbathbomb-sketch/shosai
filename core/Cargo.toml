@@ -17,6 +17,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = "2"
 little_exif = "0.6"
+rustface = "0.1"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = ["Win32_Storage_FileSystem", "Win32_Foundation"] }

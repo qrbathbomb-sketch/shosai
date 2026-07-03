@@ -60,6 +60,30 @@ fn main() {
     // 対象外ファイル(無視されることの確認)
     std::fs::write(out.join("メモ.txt"), "not a photo").unwrap();
 
+    // 連写セット(1分間隔×5枚): おまかせセレクトのburst検出用
+    let burst_dir = out.join("2019-11 競馬場");
+    for i in 0..5 {
+        write_jpeg_with_exif(
+            &burst_dir.join(format!("BURST_{:04}.jpg", i + 1)),
+            0.31,
+            &format!("2019:11:24 13:{:02}:00", 10 + i),
+            "TEST-CAM X100",
+        );
+    }
+    // 空+緑の「風景」画像: scenery score上位に来るはず
+    let sky = ImageBuffer::from_fn(640, 480, |_x, y| {
+        if y < 200 {
+            Rgb([110u8, 160, 235]) // 青空
+        } else {
+            Rgb([70u8, 140, 60]) // 緑の丘
+        }
+    });
+    let sky_path = out.join("2013-08 富士山").join("VIEW_0001.jpg");
+    sky.save(&sky_path).unwrap();
+    let mut meta = Metadata::new();
+    meta.set_tag(ExifTag::DateTimeOriginal("2013:08:03 15:00:00".to_string()));
+    meta.write_to_file(&sky_path).unwrap();
+
     println!("テスト写真を生成しました: {}", out.display());
 }
 

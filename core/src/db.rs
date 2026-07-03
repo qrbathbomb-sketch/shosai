@@ -103,6 +103,23 @@ fn migrate(conn: &Connection) -> Result<()> {
             "#,
         )?;
     }
+    if version < 4 {
+        conn.execute_batch(
+            r#"
+            -- おまかせセレクト用スコアのキャッシュ
+            CREATE TABLE IF NOT EXISTS photo_scores (
+                photo_id INTEGER PRIMARY KEY REFERENCES photos(id),
+                burst_size INTEGER NOT NULL DEFAULT 1,  -- 連写グループの枚数
+                burst_id INTEGER,                        -- 連写グループID(先頭写真のid)
+                scenery REAL,                            -- 風景らしさ 0..1
+                faces INTEGER,                           -- 検出顔数 (-1=判定不能)
+                computed_at TEXT
+            );
+
+            PRAGMA user_version = 4;
+            "#,
+        )?;
+    }
     Ok(())
 }
 

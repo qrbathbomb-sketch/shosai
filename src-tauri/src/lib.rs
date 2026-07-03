@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use tauri::{Emitter, Manager, State};
 
-use shosai_core::{batch, db, scan, thumb};
+use shosai_core::{batch, db, scan, score, thumb};
 
 struct AppState {
     data_dir: PathBuf,
@@ -169,55 +169,184 @@ fn cancel_scan(state: State<AppState>) {
     state.cancel.store(true, Ordering::SeqCst);
 }
 
+/// 束の写真をPhotoOutへ変換。サムネイル未生成ならこの場で同期生成する。
+fn fill_photos(
+    conn: &rusqlite::Connection,
+    data_dir: &PathBuf,
+    photos: Vec<batch::BatchPhoto>,
+) -> Vec<PhotoOut> {
+    photos
+        .into_iter()
+        .map(|p| {
+            let thumb_rel = match p.thumb_path {
+                Some(t) => Some(t),
+                None => {
+                    let abs_src: Option<(String, String)> = conn
+                        .query_row(
+                            "SELECT v.last_mount_path, p.rel_path FROM photos p
+                             JOIN volumes v ON v.id = p.volume_id WHERE p.id = ?1",
+                            [p.id],
+                            |r| Ok((r.get(0)?, r.get(1)?)),
+                        )
+                        .ok();
+                    abs_src.and_then(|(mount, rel)| {
+                        let abs = PathBuf::from(mount).join(rel);
+                        match thumb::generate(&abs, p.orientation, data_dir, p.id) {
+                            Ok(t) => {
+                                let _ = db::set_thumb_path(conn, p.id, &t);
+                                Some(t)
+                            }
+                            Err(_) => None,
+                        }
+                    })
+                }
+            };
+            PhotoOut {
+                id: p.id,
+                file_name: p.file_name,
+                folder: p.folder,
+                taken_at: p.taken_at,
+                camera_model: p.camera_model,
+                thumb_abs: thumb_rel.map(|t| data_dir.join(t).to_string_lossy().to_string()),
+            }
+        })
+        .collect()
+}
+
+fn to_batch_out(conn: &rusqlite::Connection, data_dir: &PathBuf, b: batch::Batch) -> BatchOut {
+    BatchOut {
+        theme: b.theme,
+        title: b.title,
+        subtitle: b.subtitle,
+        photos: fill_photos(conn, data_dir, b.photos),
+    }
+}
+
 #[tauri::command]
 fn next_batch(state: State<AppState>) -> CmdResult<Option<BatchOut>> {
     let conn = state.conn.lock().map_err(err_str)?;
     let today = today_local();
-    let b = match batch::next_batch(&conn, &today).map_err(err_str)? {
-        Some(b) => b,
-        None => return Ok(None),
-    };
-    // この束の写真だけはサムネイルを同期生成(背景生成が未完了でも発掘は動く)
-    let mut photos = Vec::with_capacity(b.photos.len());
-    for p in b.photos {
-        let thumb_rel = match p.thumb_path {
-            Some(t) => Some(t),
-            None => {
-                let abs_src: Option<(String, String)> = conn
-                    .query_row(
-                        "SELECT v.last_mount_path, p.rel_path FROM photos p
-                         JOIN volumes v ON v.id = p.volume_id WHERE p.id = ?1",
-                        [p.id],
-                        |r| Ok((r.get(0)?, r.get(1)?)),
-                    )
-                    .ok();
-                abs_src.and_then(|(mount, rel)| {
-                    let abs = PathBuf::from(mount).join(rel);
-                    match thumb::generate(&abs, p.orientation, &state.data_dir, p.id) {
-                        Ok(t) => {
-                            let _ = db::set_thumb_path(&conn, p.id, &t);
-                            Some(t)
-                        }
-                        Err(_) => None,
-                    }
-                })
-            }
-        };
-        photos.push(PhotoOut {
-            id: p.id,
-            file_name: p.file_name,
-            folder: p.folder,
-            taken_at: p.taken_at,
-            camera_model: p.camera_model,
-            thumb_abs: thumb_rel.map(|t| state.data_dir.join(t).to_string_lossy().to_string()),
-        });
+    Ok(batch::next_batch(&conn, &today)
+        .map_err(err_str)?
+        .map(|b| to_batch_out(&conn, &state.data_dir, b)))
+}
+
+#[tauri::command]
+fn custom_batch(
+    state: State<AppState>,
+    year: Option<String>,
+    keyword: Option<String>,
+    limit: usize,
+) -> CmdResult<Option<BatchOut>> {
+    let conn = state.conn.lock().map_err(err_str)?;
+    let f = batch::BatchFilter { year, keyword, limit };
+    Ok(batch::custom_batch(&conn, &f)
+        .map_err(err_str)?
+        .map(|b| to_batch_out(&conn, &state.data_dir, b)))
+}
+
+#[tauri::command]
+fn pool_years(state: State<AppState>) -> CmdResult<Vec<YearCount>> {
+    let conn = state.conn.lock().map_err(err_str)?;
+    Ok(batch::pool_years(&conn)
+        .map_err(err_str)?
+        .into_iter()
+        .map(|(year, count)| YearCount { year, count })
+        .collect())
+}
+
+/// おまかせセレクト: 連写・風景・顔スコアで自動選抜した束を返す。
+/// 初回はスコア計算に時間がかかる(1回の呼び出しで最大500枚まで解析)。
+#[tauri::command]
+fn auto_select_batch(
+    state: State<AppState>,
+    year: Option<String>,
+    limit: usize,
+) -> CmdResult<Option<BatchOut>> {
+    let conn = state.conn.lock().map_err(err_str)?;
+    score::compute_bursts(&conn, None).map_err(err_str)?;
+    score::compute_visual_scores(&conn, &state.data_dir, 500).map_err(err_str)?;
+    let picks = score::auto_select(&conn, year.as_deref(), limit.clamp(1, 30)).map_err(err_str)?;
+    if picks.is_empty() {
+        return Ok(None);
     }
-    Ok(Some(BatchOut {
-        theme: b.theme,
-        title: b.title,
-        subtitle: b.subtitle,
+    // スコア順を保って写真情報を取得
+    let mut photos = Vec::with_capacity(picks.len());
+    for sp in &picks {
+        let row: Option<batch::BatchPhoto> = conn
+            .query_row(
+                "SELECT id, rel_path, taken_at, camera_model, thumb_path, orientation
+                 FROM photos WHERE id = ?1",
+                [sp.photo_id],
+                |r| {
+                    let rel: String = r.get(1)?;
+                    let (folder, file_name) = match rel.rsplit_once('/') {
+                        Some((dir, name)) => (
+                            dir.rsplit_once('/').map(|(_, f)| f).unwrap_or(dir).to_string(),
+                            name.to_string(),
+                        ),
+                        None => (String::new(), rel.clone()),
+                    };
+                    Ok(batch::BatchPhoto {
+                        id: r.get(0)?,
+                        rel_path: rel,
+                        file_name,
+                        folder,
+                        taken_at: r.get(2)?,
+                        camera_model: r.get(3)?,
+                        thumb_path: r.get(4)?,
+                        orientation: r.get(5)?,
+                    })
+                },
+            )
+            .ok();
+        if let Some(p) = row {
+            photos.push(p);
+        }
+    }
+    let b = batch::Batch {
+        theme: "auto".into(),
+        title: "おまかせセレクト".into(),
+        subtitle: year.map(|y| format!("{}年", y)).unwrap_or_default(),
         photos,
-    }))
+    };
+    Ok(Some(to_batch_out(&conn, &state.data_dir, b)))
+}
+
+/// 「残したい」に選んだ写真の一覧(作品候補の棚)
+#[tauri::command]
+fn list_kept(state: State<AppState>) -> CmdResult<Vec<PhotoOut>> {
+    let conn = state.conn.lock().map_err(err_str)?;
+    let mut stmt = conn
+        .prepare(
+            "SELECT p.id, p.rel_path, p.taken_at, p.camera_model, p.thumb_path
+             FROM triage t JOIN photos p ON p.id = t.photo_id
+             WHERE t.decision='keep' AND p.status='present'
+             ORDER BY p.taken_at",
+        )
+        .map_err(err_str)?;
+    let rows = stmt
+        .query_map([], |r| {
+            let rel: String = r.get(1)?;
+            let (folder, file_name) = match rel.rsplit_once('/') {
+                Some((dir, name)) => (
+                    dir.rsplit_once('/').map(|(_, f)| f).unwrap_or(dir).to_string(),
+                    name.to_string(),
+                ),
+                None => (String::new(), rel.clone()),
+            };
+            let thumb: Option<String> = r.get(4)?;
+            Ok(PhotoOut {
+                id: r.get(0)?,
+                file_name,
+                folder,
+                taken_at: r.get(2)?,
+                camera_model: r.get(3)?,
+                thumb_abs: thumb.map(|t| state.data_dir.join(t).to_string_lossy().to_string()),
+            })
+        })
+        .map_err(err_str)?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(err_str)
 }
 
 #[derive(Serialize, Clone)]
@@ -370,6 +499,10 @@ pub fn run() {
             start_scan,
             cancel_scan,
             next_batch,
+            custom_batch,
+            pool_years,
+            auto_select_batch,
+            list_kept,
             triage_photo,
             create_shiori,
             list_shiori

@@ -89,6 +89,59 @@ fn sample_spread(mut photos: Vec<BatchPhoto>, max: usize) -> Vec<BatchPhoto> {
     out
 }
 
+/// 行き先指定の発掘束。年・フォルダ名キーワード・枚数をユーザーが選ぶ。
+pub struct BatchFilter {
+    pub year: Option<String>,        // "2019"
+    pub keyword: Option<String>,     // フォルダ/ファイル名に含まれる語 (例: 祭)
+    pub limit: usize,                // 5 / 10 / 20
+}
+
+pub fn custom_batch(conn: &Connection, f: &BatchFilter) -> Result<Option<Batch>> {
+    let mut conds = String::new();
+    let mut params_: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
+    if let Some(y) = &f.year {
+        params_.push(Box::new(y.clone()));
+        conds.push_str(&format!(" AND substr(p.taken_at,1,4) = ?{}", params_.len()));
+    }
+    if let Some(kw) = &f.keyword {
+        let kw = kw.trim();
+        if !kw.is_empty() {
+            params_.push(Box::new(format!("%{}%", kw)));
+            conds.push_str(&format!(" AND p.rel_path LIKE ?{}", params_.len()));
+        }
+    }
+    let refs: Vec<&dyn rusqlite::ToSql> = params_.iter().map(|b| b.as_ref()).collect();
+    let photos = fetch_photos(conn, &conds, &refs)?;
+    if photos.is_empty() {
+        return Ok(None);
+    }
+    let limit = f.limit.clamp(1, 30);
+    let title = match (&f.year, &f.keyword) {
+        (Some(y), Some(k)) if !k.trim().is_empty() => format!("{}年・「{}」", y, k.trim()),
+        (Some(y), _) => format!("{}年の写真", y),
+        (None, Some(k)) if !k.trim().is_empty() => format!("「{}」の写真", k.trim()),
+        _ => "えらんだ写真".to_string(),
+    };
+    Ok(Some(Batch {
+        theme: "custom".into(),
+        title,
+        subtitle: String::new(),
+        photos: sample_spread(photos, limit),
+    }))
+}
+
+/// 候補が残っている年の一覧(行き先選択UI用)
+pub fn pool_years(conn: &Connection) -> Result<Vec<(String, i64)>> {
+    let mut stmt = conn.prepare(&format!(
+        "SELECT substr(p.taken_at,1,4) y, COUNT(*)
+         FROM photos p LEFT JOIN triage t ON t.photo_id = p.id
+         WHERE {} AND p.taken_at IS NOT NULL GROUP BY y ORDER BY y",
+        POOL_COND
+    ))?;
+    let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
+    Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+}
+
 /// 次の発掘束を返す。候補が尽きたらNone。
 /// today: "YYYY-MM-DD" (テスト可能にするため引数で受ける)
 pub fn next_batch(conn: &Connection, today: &str) -> Result<Option<Batch>> {

@@ -499,3 +499,59 @@ body {
 .library-item:hover {
   transform: translateY(-3px);
 }
+
+/* ホームの小カードと行き先ピッカー */
+.two-cards {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+  margin-top: 16px;
+}
+
+.mini-card {
+  cursor: pointer;
+  padding: 20px 24px;
+  transition: transform 0.12s, box-shadow 0.12s;
+}
+
+.mini-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 16px rgba(90, 70, 40, 0.12);
+}
+
+.mini-title {
+  font-family: "Hiragino Mincho ProN", "Yu Mincho", "MS PMincho", serif;
+  font-size: 1.15rem;
+  margin: 0 0 4px;
+}
+
+.picker-block {
+  margin: 22px auto;
+  max-width: 640px;
+}
+
+.picker-label {
+  font-weight: 700;
+  margin: 0 0 8px;
+}
+
+.chip-btn {
+  font: inherit;
+  font-size: 0.95rem;
+  cursor: pointer;
+  padding: 8px 16px;
+}
+
+.chip-btn:hover {
+  background: #f2ece0;
+}
+
+.chip-on {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+.picker-block .year-chips {
+  justify-content: flex-start;
+}

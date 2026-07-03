@@ -66,6 +66,9 @@ type View =
   | "start"
   | "scanning"
   | "home"
+  | "picker"
+  | "autoLoading"
+  | "kept"
   | "batch"
   | "focus"
   | "compose"
@@ -139,6 +142,12 @@ function App() {
   const [library, setLibrary] = useState<Shiori[]>([]);
   const [detail, setDetail] = useState<Shiori | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  // 行き先を選んで発掘
+  const [pickYears, setPickYears] = useState<{ year: string; count: number }[]>([]);
+  const [selYear, setSelYear] = useState<string | null>(null);
+  const [keyword, setKeyword] = useState("");
+  const [pickLimit, setPickLimit] = useState(10);
+  const [keptGrid, setKeptGrid] = useState<Photo[]>([]);
 
   const refreshOverview = useCallback(async (): Promise<Overview> => {
     const ov = await invoke<Overview>("get_overview");
@@ -295,6 +304,58 @@ function App() {
     setView("library");
   };
 
+  const openPicker = async () => {
+    setNotice(null);
+    const years = await invoke<{ year: string; count: number }[]>("pool_years");
+    setPickYears(years);
+    setSelYear(null);
+    setKeyword("");
+    setView("picker");
+  };
+
+  const startCustom = async () => {
+    setNotice(null);
+    const b = await invoke<Batch | null>("custom_batch", {
+      year: selYear,
+      keyword: keyword.trim() || null,
+      limit: pickLimit,
+    });
+    if (!b || b.photos.length === 0) {
+      setNotice("この条件に合う写真は、いまは残っていません。");
+      return;
+    }
+    setBatch(b);
+    setFocusIdx(0);
+    setKeptPhotos([]);
+    setView("batch");
+  };
+
+  const startAuto = async () => {
+    setNotice(null);
+    setView("autoLoading");
+    try {
+      const b = await invoke<Batch | null>("auto_select_batch", { year: null, limit: 10 });
+      if (!b || b.photos.length === 0) {
+        setNotice("選べる写真がまだありません。先に読み取りを済ませてください。");
+        setView("home");
+        return;
+      }
+      setBatch(b);
+      setFocusIdx(0);
+      setKeptPhotos([]);
+      setView("batch");
+    } catch (e) {
+      setNotice(String(e));
+      setView("home");
+    }
+  };
+
+  const openKept = async () => {
+    const list = await invoke<Photo[]>("list_kept");
+    setKeptGrid(list);
+    setView("kept");
+  };
+
   // ---------- 画面 ----------
 
   if (view === "loading") {
@@ -395,13 +456,30 @@ function App() {
             開けてみる
           </button>
         </section>
-        {ov && ov.shioriCount > 0 && (
-          <section className="card library-card" onClick={openLibrary}>
-            <div>
-              <h2 className="section-title">書斎の棚</h2>
-              <p className="small gray">これまでに作ったしおり {ov.shioriCount}枚</p>
-            </div>
-            <button className="btn outline">ひらく</button>
+        <section className="two-cards">
+          <div className="card mini-card" onClick={openPicker}>
+            <h3 className="mini-title">行き先を選んで発掘</h3>
+            <p className="small gray">年・キーワード・枚数を選べます</p>
+          </div>
+          <div className="card mini-card" onClick={startAuto}>
+            <h3 className="mini-title">おまかせセレクト</h3>
+            <p className="small gray">景色の良さそうな写真を自動で選びます</p>
+          </div>
+        </section>
+        {ov && (ov.shioriCount > 0 || ov.kept > 0) && (
+          <section className="two-cards">
+            {ov.shioriCount > 0 && (
+              <div className="card mini-card" onClick={openLibrary}>
+                <h3 className="mini-title">書斎の棚</h3>
+                <p className="small gray">しおり {ov.shioriCount}枚</p>
+              </div>
+            )}
+            {ov.kept > 0 && (
+              <div className="card mini-card" onClick={openKept}>
+                <h3 className="mini-title">作品候補の棚</h3>
+                <p className="small gray">★残したい {ov.kept}枚</p>
+              </div>
+            )}
           </section>
         )}
         {notice && <p className="notice">{notice}</p>}
@@ -416,6 +494,121 @@ function App() {
             写真の場所を追加する
           </button>
         </section>
+      </main>
+    );
+  }
+
+  if (view === "picker") {
+    return (
+      <main className="page">
+        <header className="batch-head">
+          <h2 className="section-title">行き先を選んで発掘</h2>
+          <p className="small gray">決めたいところだけ選べば大丈夫です。</p>
+        </header>
+        <div className="picker-block">
+          <p className="picker-label">年をえらぶ</p>
+          <div className="year-chips">
+            <button
+              className={`chip chip-btn ${selYear === null ? "chip-on" : ""}`}
+              onClick={() => setSelYear(null)}
+            >
+              すべての年
+            </button>
+            {pickYears.map((y) => (
+              <button
+                key={y.year}
+                className={`chip chip-btn ${selYear === y.year ? "chip-on" : ""}`}
+                onClick={() => setSelYear(y.year)}
+              >
+                {y.year}年 ({y.count})
+              </button>
+            ))}
+          </div>
+        </div>
+        <div className="picker-block">
+          <p className="picker-label">
+            キーワード <span className="gray small">(フォルダ名などから探します。例: 祭、山、京都)</span>
+          </p>
+          <input
+            className="note-input"
+            type="text"
+            value={keyword}
+            placeholder="例: 祭"
+            onChange={(e) => setKeyword(e.target.value)}
+          />
+        </div>
+        <div className="picker-block">
+          <p className="picker-label">枚数</p>
+          <div className="year-chips">
+            {[5, 10, 20].map((n) => (
+              <button
+                key={n}
+                className={`chip chip-btn ${pickLimit === n ? "chip-on" : ""}`}
+                onClick={() => setPickLimit(n)}
+              >
+                {n}枚
+              </button>
+            ))}
+          </div>
+        </div>
+        {notice && <p className="notice">{notice}</p>}
+        <div className="actions-row">
+          <button className="btn primary big" onClick={startCustom}>
+            この条件で発掘する
+          </button>
+          <button className="btn ghost" onClick={() => setView("home")}>
+            戻る
+          </button>
+        </div>
+      </main>
+    );
+  }
+
+  if (view === "autoLoading") {
+    return (
+      <main className="page center-page">
+        <h2 className="section-title">おまかせセレクト</h2>
+        <p className="lead">
+          写真を見ています…
+          <br />
+          <span className="small gray">
+            連写の多さ・空や緑の広がり・人の写り込みから、景色の良さそうな写真を選びます。
+            <br />
+            はじめてのときは少し時間がかかります。
+          </span>
+        </p>
+      </main>
+    );
+  }
+
+  if (view === "kept") {
+    return (
+      <main className="page">
+        <header className="batch-head">
+          <h2 className="section-title">作品候補の棚</h2>
+          <p className="small gray">「★残したい」に選んだ写真 {keptGrid.length}枚</p>
+        </header>
+        {keptGrid.length === 0 ? (
+          <p className="lead center">まだありません。発掘で「★残したい」を選ぶと貯まります。</p>
+        ) : (
+          <div className="grid">
+            {keptGrid.map((p) => (
+              <figure className="grid-item" key={p.id}>
+                {p.thumbAbs ? (
+                  <img src={thumbSrc(p.thumbAbs)} alt={p.fileName} loading="lazy" />
+                ) : (
+                  <div className="noimg">画像なし</div>
+                )}
+                <figcaption className="small gray center">{formatDate(p.takenAt)}</figcaption>
+              </figure>
+            ))}
+          </div>
+        )}
+        <div className="actions-row">
+          <button className="btn ghost" onClick={() => setView("home")}>
+            戻る
+          </button>
+        </div>
       </main>
     );
   }

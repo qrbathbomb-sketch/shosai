@@ -20,6 +20,7 @@ fn main() {
     let mut do_thumbs = false;
     let mut do_report = false;
     let mut batch_rounds = 0usize;
+    let mut auto_n = 0usize;
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
@@ -32,6 +33,10 @@ fn main() {
             "--batch" => {
                 i += 1;
                 batch_rounds = args[i].parse().unwrap_or(1);
+            }
+            "--auto" => {
+                i += 1;
+                auto_n = args[i].parse().unwrap_or(8);
             }
             other => {
                 eprintln!("unknown arg: {}", other);
@@ -81,6 +86,40 @@ fn main() {
 
     if do_report {
         report(&conn).expect("report failed");
+    }
+
+    // おまかせセレクトの検証
+    if auto_n > 0 {
+        use std::time::Instant;
+        let t = Instant::now();
+        shosai_core::score::compute_bursts(&conn, None).expect("bursts failed");
+        let scored = shosai_core::score::compute_visual_scores(&conn, &data_dir, 10_000)
+            .expect("visual scores failed");
+        println!(
+            "\n== おまかせセレクト (視覚スコア{}件計算, {:.1}s) ==",
+            scored,
+            t.elapsed().as_secs_f64()
+        );
+        let picks = shosai_core::score::auto_select(&conn, None, auto_n).expect("auto_select failed");
+        for sp in &picks {
+            let (rel, taken): (String, Option<String>) = conn
+                .query_row(
+                    "SELECT rel_path, taken_at FROM photos WHERE id=?1",
+                    [sp.photo_id],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .unwrap();
+            let name = rel.rsplit('/').next().unwrap_or(&rel);
+            println!(
+                "  score={:.2} scenery={:.2} burst={} faces={} | {} | {}",
+                sp.score,
+                sp.scenery,
+                sp.burst_size,
+                sp.faces,
+                taken.as_deref().unwrap_or("-"),
+                name
+            );
+        }
     }
 
     // 発掘束の検証: 束を取得→全てskip扱い→次の束、を繰り返す

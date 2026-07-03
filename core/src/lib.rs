@@ -8,6 +8,7 @@ pub mod db;
 pub mod exif_read;
 pub mod hash;
 pub mod scan;
+pub mod score;
 pub mod thumb;
 pub mod volume;
 
