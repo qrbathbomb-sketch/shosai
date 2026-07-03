@@ -14,7 +14,69 @@ struct AppState {
     db_path: PathBuf,
     conn: Mutex<rusqlite::Connection>,
     scanning: Arc<AtomicBool>,
+    scoring: Arc<AtomicBool>,
     cancel: Arc<AtomicBool>,
+}
+
+/// おまかせセレクト用スコア(連写・風景・顔)をバックグラウンドで全写真に付与する。
+/// 少しずつ処理して score-progress を通知。中断可。重い顔検出があるので背景で行う。
+fn run_scoring(
+    conn: &rusqlite::Connection,
+    data_dir: &std::path::Path,
+    cancel: &Arc<AtomicBool>,
+    app: &tauri::AppHandle,
+) -> shosai_core::Result<()> {
+    score::compute_bursts(conn, None)?;
+    let total: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM photos WHERE status='present' AND kind='image' AND thumb_path IS NOT NULL",
+        [],
+        |r| r.get(0),
+    )?;
+    let scored_before: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM photo_scores WHERE scenery IS NOT NULL",
+        [],
+        |r| r.get(0),
+    )?;
+    let mut done = scored_before;
+    loop {
+        if cancel.load(Ordering::Relaxed) {
+            break;
+        }
+        let n = score::compute_visual_scores(conn, data_dir, 40)?;
+        if n == 0 {
+            break;
+        }
+        done += n as i64;
+        let _ = app.emit("score-progress", serde_json::json!({ "done": done, "total": total }));
+    }
+    Ok(())
+}
+
+/// スコアリングを背景スレッドで開始(すでに走査/採点中なら何もしない)。
+fn spawn_scoring(app: &tauri::AppHandle, state: &AppState) {
+    if state.scanning.load(Ordering::SeqCst) {
+        return; // 走査スレッドが最後に採点する
+    }
+    if state.scoring.swap(true, Ordering::SeqCst) {
+        return; // すでに採点中
+    }
+    let db_path = state.db_path.clone();
+    let data_dir = state.data_dir.clone();
+    let scoring = state.scoring.clone();
+    let cancel = state.cancel.clone();
+    let app = app.clone();
+    std::thread::spawn(move || {
+        if let Ok(conn) = db::open(&db_path) {
+            let _ = run_scoring(&conn, &data_dir, &cancel, &app);
+        }
+        scoring.store(false, Ordering::SeqCst);
+        let _ = app.emit("score-idle", ());
+    });
+}
+
+#[tauri::command]
+fn ensure_scoring(app: tauri::AppHandle, state: State<AppState>) {
+    spawn_scoring(&app, &state);
 }
 
 #[derive(Serialize)]
@@ -164,6 +226,9 @@ fn start_scan(app: tauri::AppHandle, state: State<AppState>, path: String) -> Cm
                     let _ = app.emit("thumb-progress", serde_json::json!({"done": i + 1, "total": total}));
                 }
             }
+
+            // サムネイル後、おまかせセレクト用スコアを背景採点(中断可)
+            run_scoring(&conn, &data_dir, &cancel, &app)?;
             Ok(())
         })();
         if let Err(e) = result {
@@ -267,20 +332,26 @@ fn pool_years(state: State<AppState>) -> CmdResult<Vec<YearCount>> {
 }
 
 /// おまかせセレクト: 連写・風景・顔スコアで自動選抜した束を返す。
-/// 初回はスコア計算に時間がかかる(1回の呼び出しで最大500枚まで解析)。
+/// スコアは背景採点(run_scoring)が付与するため、ここでは既存スコアから即選抜。
+/// まだ採点が終わっていなければ背景採点を起動し、その時点のスコアで選ぶ。
 #[tauri::command]
 fn auto_select_batch(
+    app: tauri::AppHandle,
     state: State<AppState>,
     year: Option<String>,
     limit: usize,
 ) -> CmdResult<Option<BatchOut>> {
-    let conn = state.conn.lock().map_err(err_str)?;
-    score::compute_bursts(&conn, None).map_err(err_str)?;
-    score::compute_visual_scores(&conn, &state.data_dir, 500).map_err(err_str)?;
-    let picks = score::auto_select(&conn, year.as_deref(), limit.clamp(1, 30)).map_err(err_str)?;
+    let picks = {
+        let conn = state.conn.lock().map_err(err_str)?;
+        score::compute_bursts(&conn, None).map_err(err_str)?; // 連写は安価
+        score::auto_select(&conn, year.as_deref(), limit.clamp(1, 30)).map_err(err_str)?
+    };
+    // 背景採点を(まだなら)起動して、次回以降の質を上げる
+    spawn_scoring(&app, &state);
     if picks.is_empty() {
         return Ok(None);
     }
+    let conn = state.conn.lock().map_err(err_str)?;
     // スコア順を保って写真情報を取得
     let mut photos = Vec::with_capacity(picks.len());
     for sp in &picks {
@@ -575,6 +646,7 @@ pub fn run() {
                 db_path,
                 conn: Mutex::new(conn),
                 scanning: Arc::new(AtomicBool::new(false)),
+                scoring: Arc::new(AtomicBool::new(false)),
                 cancel: Arc::new(AtomicBool::new(false)),
             });
             Ok(())
@@ -587,6 +659,7 @@ pub fn run() {
             custom_batch,
             pool_years,
             auto_select_batch,
+            ensure_scoring,
             list_kept,
             get_photo_jpeg,
             save_binary,

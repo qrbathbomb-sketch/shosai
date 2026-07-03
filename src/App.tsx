@@ -154,6 +154,7 @@ function App() {
   const [keyword, setKeyword] = useState("");
   const [pickLimit, setPickLimit] = useState(10);
   const [keptGrid, setKeptGrid] = useState<Photo[]>([]);
+  const [scoreProg, setScoreProg] = useState<{ done: number; total: number } | null>(null);
 
   const refreshOverview = useCallback(async (): Promise<Overview> => {
     const ov = await call<Overview>("get_overview");
@@ -166,8 +167,11 @@ function App() {
       try {
         const ov = await refreshOverview();
         if (ov.scanning) setView("scanning");
-        else if (ov.totalPhotos > 0 || ov.roots.length > 0) setView("home");
-        else setView("start");
+        else if (ov.totalPhotos > 0 || ov.roots.length > 0) {
+          setView("home");
+          // 既にインデックス済みなら、おまかせ用スコアを背景で採点開始
+          if (ov.totalPhotos > 0) call("ensure_scoring").catch(() => {});
+        } else setView("start");
       } catch (e) {
         setNotice(String(e));
         setView("start");
@@ -201,6 +205,10 @@ function App() {
         setOverview(ov);
         setScan((s) => ({ ...s, finished: true }));
       }),
+      on("score-progress", (p: { done: number; total: number }) => {
+        setScoreProg(p.done >= p.total ? null : p);
+      }),
+      on("score-idle", () => setScoreProg(null)),
     ];
     return () => {
       unlisteners.forEach((u) => u.then((f) => f()));
@@ -560,7 +568,11 @@ function App() {
           </div>
           <div className="card mini-card" onClick={startAuto}>
             <h3 className="mini-title">おまかせセレクト</h3>
-            <p className="small gray">景色の良さそうな写真を自動で選びます</p>
+            <p className="small gray">
+              {scoreProg
+                ? `写真をゆっくり見ています… ${scoreProg.done}/${scoreProg.total}`
+                : "景色の良さそうな写真を自動で選びます"}
+            </p>
           </div>
         </section>
         {ov && (ov.shioriCount > 0 || ov.kept > 0) && (

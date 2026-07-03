@@ -392,8 +392,46 @@ async function startScan() {
     }
   }
 
+  // サムネイル後、おまかせセレクト用スコアを背景採点
+  await runScoring();
+
   scanning = false;
   emit("scan-idle", {});
+}
+
+// ---- 背景スコアリング ----
+
+let scoring = false;
+
+/** 連写+風景スコアを全写真に少しずつ付与。score-progressを通知。中断可 */
+async function runScoring() {
+  const d = await db();
+  await computeBursts();
+  const scorable = (await allPhotos()).filter(
+    (p) => p.status === "present" && p.kind === "image" && p.hasThumb
+  );
+  const total = scorable.length;
+  let done = (await d.getAll("scores") as ScoreRec[]).filter((s) => s.scenery != null).length;
+  while (true) {
+    if (cancelFlag) break;
+    const n = await computeVisualScores(40);
+    if (n === 0) break;
+    done += n;
+    emit("score-progress", { done, total });
+    await new Promise((r) => setTimeout(r, 0));
+  }
+}
+
+/** 背景採点を開始(走査/採点中なら何もしない)。UIがホーム表示時に呼ぶ */
+async function ensureScoring() {
+  if (scanning || scoring) return;
+  scoring = true;
+  try {
+    await runScoring();
+  } finally {
+    scoring = false;
+    emit("score-idle", {});
+  }
 }
 
 // ---- サムネイルURLキャッシュ ----
@@ -616,8 +654,8 @@ async function computeVisualScores(limit: number) {
 }
 
 async function autoSelect(year: string | null, limit: number) {
+  // スコアは背景採点(runScoring)が付与。ここは連写だけ確定し既存スコアで即選抜
   await computeBursts();
-  await computeVisualScores(500);
   const d = await db();
   const tri = await triageMap();
   const scores = new Map<number, ScoreRec>(
@@ -702,6 +740,9 @@ export async function webCall<T>(cmd: string, args: Record<string, unknown>): Pr
     case "cancel_scan":
       cancelFlag = true;
       return undefined as T;
+    case "ensure_scoring":
+      ensureScoring(); // 非同期・awaitしない
+      return undefined as T;
     case "next_batch":
       return (await nextBatch()) as T;
     case "custom_batch":
@@ -720,8 +761,11 @@ export async function webCall<T>(cmd: string, args: Record<string, unknown>): Pr
       }
       return [...m.entries()].sort().map(([year, count]) => ({ year, count })) as T;
     }
-    case "auto_select_batch":
-      return (await autoSelect((args.year as string | null) ?? null, Number(args.limit) || 10)) as T;
+    case "auto_select_batch": {
+      const res = await autoSelect((args.year as string | null) ?? null, Number(args.limit) || 10);
+      ensureScoring(); // 背景採点を(まだなら)起動し、次回以降の質を上げる
+      return res as T;
+    }
     case "triage_photo": {
       await d.put("triage", {
         photoId: Number(args.photoId),
