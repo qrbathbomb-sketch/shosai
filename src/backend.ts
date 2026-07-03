@@ -42,6 +42,15 @@ export function fileSrc(path: string): string {
   return isTauri ? convertFileSrc(path) : path;
 }
 
+/** 写真の実フォルダをFinder/Explorerで開く。デモではfalseを返す(UIが案内を表示) */
+export async function revealPhoto(photoId: number): Promise<boolean> {
+  if (isTauri) {
+    await invoke("reveal_photo", { photoId });
+    return true;
+  }
+  return false;
+}
+
 /** PDF用の高解像度画像バイト列。Tauriは元写真から1600px、デモは大きめのサンプルを取得 */
 export async function photoJpegBytes(p: { id: number; thumbAbs: string | null }): Promise<Uint8Array> {
   if (isTauri) {

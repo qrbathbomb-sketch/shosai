@@ -1,5 +1,14 @@
 import { useCallback, useEffect, useState } from "react";
-import { call, on, pickDirectory, fileSrc, isDemo, photoJpegBytes, savePdf } from "./backend";
+import {
+  call,
+  on,
+  pickDirectory,
+  fileSrc,
+  isDemo,
+  photoJpegBytes,
+  savePdf,
+  revealPhoto,
+} from "./backend";
 import "./App.css";
 
 type Overview = {
@@ -351,6 +360,17 @@ function App() {
 
   const [exporting, setExporting] = useState(false);
 
+  const openPhotoFolder = async (photoId: number) => {
+    try {
+      const ok = await revealPhoto(photoId);
+      if (!ok) {
+        setNotice("デモではフォルダを開けません。実際のアプリでは、写真の入っているフォルダがそのまま開きます。");
+      }
+    } catch (e) {
+      setNotice(String(e));
+    }
+  };
+
   const exportPdf = async (s: Shiori) => {
     if (exporting) return;
     setExporting(true);
@@ -619,18 +639,30 @@ function App() {
         {keptGrid.length === 0 ? (
           <p className="lead center">まだありません。発掘で「★残したい」を選ぶと貯まります。</p>
         ) : (
-          <div className="grid">
-            {keptGrid.map((p) => (
-              <figure className="grid-item" key={p.id}>
-                {p.thumbAbs ? (
-                  <img src={thumbSrc(p.thumbAbs)} alt={p.fileName} loading="lazy" />
-                ) : (
-                  <div className="noimg">画像なし</div>
-                )}
-                <figcaption className="small gray center">{formatDate(p.takenAt)}</figcaption>
-              </figure>
-            ))}
-          </div>
+          <>
+            <p className="small gray center">写真をクリックすると、入っているフォルダが開きます。</p>
+            {notice && <p className="notice">{notice}</p>}
+            <div className="grid">
+              {keptGrid.map((p) => (
+                <figure
+                  className="grid-item clickable"
+                  key={p.id}
+                  title="フォルダを開く"
+                  onClick={() => openPhotoFolder(p.id)}
+                >
+                  {p.thumbAbs ? (
+                    <img src={thumbSrc(p.thumbAbs)} alt={p.fileName} loading="lazy" />
+                  ) : (
+                    <div className="noimg">画像なし</div>
+                  )}
+                  <figcaption className="small gray center">
+                    {formatDate(p.takenAt)}
+                    {p.folder && ` ・ ${p.folder}`}
+                  </figcaption>
+                </figure>
+              ))}
+            </div>
+          </>
         )}
         <div className="actions-row">
           <button className="btn ghost" onClick={() => setView("home")}>
@@ -690,7 +722,11 @@ function App() {
         <p className="caption center">
           {formatDate(p.takenAt)}
           {p.folder && ` ・ ${p.folder}`}
+          <button className="btn ghost tiny" onClick={() => openPhotoFolder(p.id)}>
+            フォルダを開く
+          </button>
         </p>
+        {notice && <p className="notice">{notice}</p>}
         <div className="decide-row">
           <button className="btn primary big" onClick={() => decide("keep")}>
             ★ 残したい

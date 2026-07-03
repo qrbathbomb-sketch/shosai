@@ -1,9 +1,10 @@
 // しおりのPDF書き出し。A5縦・カードデザインをそのまま紙面に再現する。
-// 日本語はNoto Serif JPを埋め込み(subset)。
+// 日本語はIPAex明朝(TTF)をサブセット埋め込み。
+// 注: CFF形式(OTF)はpdf-libのサブセットで文字化けするため使わないこと(検証済み)。
 
 import { PDFDocument, PDFFont, PDFImage, PDFPage, rgb } from "pdf-lib";
 import fontkit from "@pdf-lib/fontkit";
-import fontUrl from "./fonts/NotoSerifJP-Regular.otf?url";
+import fontUrl from "./fonts/ipaexm.ttf?url";
 
 type PdfPhoto = { bytes: Uint8Array };
 

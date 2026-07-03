@@ -481,6 +481,26 @@ fn get_photo_jpeg(state: State<AppState>, photo_id: i64, max_edge: u32) -> CmdRe
     Ok(base64::engine::general_purpose::STANDARD.encode(buf))
 }
 
+/// 写真の入っているフォルダをOSのファイルマネージャで開く(写真を選択状態で表示)。
+#[tauri::command]
+fn reveal_photo(state: State<AppState>, photo_id: i64) -> CmdResult<()> {
+    let (mount, rel): (String, String) = {
+        let conn = state.conn.lock().map_err(err_str)?;
+        conn.query_row(
+            "SELECT v.last_mount_path, p.rel_path FROM photos p
+             JOIN volumes v ON v.id = p.volume_id WHERE p.id = ?1",
+            [photo_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .map_err(|_| "写真が見つかりません".to_string())?
+    };
+    let abs = PathBuf::from(mount).join(rel);
+    if !abs.exists() {
+        return Err("元写真にアクセスできません(ドライブが外れていませんか?)".to_string());
+    }
+    tauri_plugin_opener::reveal_item_in_dir(&abs).map_err(err_str)
+}
+
 /// 書き出し: ユーザーがダイアログで明示選択したパスへ新規ファイルを書く。
 /// 元写真の保存領域への書き込みではない(安全原則の範囲内)。
 #[tauri::command]
@@ -559,6 +579,7 @@ pub fn run() {
             list_kept,
             get_photo_jpeg,
             save_binary,
+            reveal_photo,
             triage_photo,
             create_shiori,
             list_shiori

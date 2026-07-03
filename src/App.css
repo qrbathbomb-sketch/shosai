@@ -555,3 +555,17 @@ body {
 .picker-block .year-chips {
   justify-content: flex-start;
 }
+
+.btn.tiny {
+  font-size: 0.82rem;
+  padding: 4px 12px;
+  margin-left: 10px;
+}
+
+.grid-item.clickable {
+  cursor: pointer;
+}
+
+.grid-item.clickable:hover img {
+  box-shadow: 0 0 0 3px var(--accent);
+}
