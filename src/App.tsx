@@ -4,7 +4,7 @@ import {
   on,
   pickDirectory,
   fileSrc,
-  isDemo,
+  isWeb,
   photoJpegBytes,
   savePdf,
   revealPhoto,
@@ -362,9 +362,10 @@ function App() {
 
   const openPhotoFolder = async (photoId: number) => {
     try {
-      const ok = await revealPhoto(photoId);
-      if (!ok) {
-        setNotice("デモではフォルダを開けません。実際のアプリでは、写真の入っているフォルダがそのまま開きます。");
+      const location = await revealPhoto(photoId);
+      if (location) {
+        // ブラウザ版: OSフォルダは開けないため場所を表示
+        setNotice(`保存場所: ${location}`);
       }
     } catch (e) {
       setNotice(String(e));
@@ -413,13 +414,13 @@ function App() {
           あなたの記録と作品に変えていくソフトです。
         </p>
         <button className="btn primary big" onClick={pickFolder}>
-          {isDemo ? "デモ写真で試してみる" : "写真が入っている場所を選ぶ"}
+          写真が入っている場所を選ぶ
         </button>
-        {isDemo && (
+        {isWeb && (
           <p className="small gray">
-            これは体験デモです。写真はサンプル画像に置き換わっています。
+            この画面はブラウザ版です。選んだフォルダの写真は、あなたのパソコンの中だけで読み取ります(どこにも送信しません)。
             <br />
-            実際のアプリは、お使いのパソコンの中の写真をその場で読み取ります(送信はしません)。
+            ※ ChromeまたはEdgeが必要です。常に使うならデスクトップ版アプリもあります。
           </p>
         )}
         <div className="safety card">

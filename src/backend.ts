@@ -1,29 +1,29 @@
-// バックエンド差し替え層。
-// Tauri内 → Rustコマンド / ブラウザ(デモ) → demoBackendのサンプルデータ。
-// App.tsxはこのモジュールだけを使い、環境を意識しない。
+// バックエンド差し替え層。App.tsxはこのモジュールだけを使い、環境を意識しない。
+// Tauri内 → Rustコマンド / ブラウザ → webBackend(File System Access APIで実フォルダを読む)。
+// どちらも同じコマンド体系・同じ機能。写真はネットワーク送信しない。
 
 import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
-import { demoCall, demoListen } from "./demoBackend";
+import {
+  webCall,
+  webListen,
+  webPickDirectory,
+  webPhotoLocation,
+  webPhotoJpegBytes,
+} from "./webBackend";
 
 export const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
-export const isDemo = !isTauri;
+export const isWeb = !isTauri;
 
 export async function call<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
   if (isTauri) return invoke<T>(cmd, args);
-  return demoCall<T>(cmd, args ?? {});
+  return webCall<T>(cmd, args ?? {});
 }
 
-export async function on(
-  event: string,
-  cb: (payload: any) => void
-): Promise<() => void> {
-  if (isTauri) {
-    const un = await listen(event, (ev) => cb(ev.payload));
-    return un;
-  }
-  return demoListen(event, cb);
+export async function on(event: string, cb: (payload: any) => void): Promise<() => void> {
+  if (isTauri) return listen(event, (ev) => cb(ev.payload));
+  return webListen(event, cb);
 }
 
 export async function pickDirectory(): Promise<string | null> {
@@ -34,25 +34,25 @@ export async function pickDirectory(): Promise<string | null> {
     });
     return typeof dir === "string" ? dir : null;
   }
-  return "デモ写真(サンプル)";
+  return webPickDirectory();
 }
 
 export function fileSrc(path: string): string {
-  if (path.startsWith("http")) return path;
+  if (path.startsWith("http") || path.startsWith("blob:")) return path;
   return isTauri ? convertFileSrc(path) : path;
 }
 
-/** 写真の実フォルダをFinder/Explorerで開く。デモではfalseを返す(UIが案内を表示) */
-export async function revealPhoto(photoId: number): Promise<boolean> {
+/** 写真の実フォルダを開く。ブラウザではOSフォルダを開けないため場所を案内する */
+export async function revealPhoto(photoId: number): Promise<string | null> {
   if (isTauri) {
     await invoke("reveal_photo", { photoId });
-    return true;
+    return null; // 成功: フォルダが開いた
   }
-  return false;
+  return webPhotoLocation(photoId); // 場所文字列を返す(UIが表示)
 }
 
-/** PDF用の高解像度画像バイト列。Tauriは元写真から1600px、デモは大きめのサンプルを取得 */
-export async function photoJpegBytes(p: { id: number; thumbAbs: string | null }): Promise<Uint8Array> {
+/** PDF用の高解像度JPEGバイト列。元写真から1600pxで読み直す */
+export async function photoJpegBytes(p: { id: number }): Promise<Uint8Array> {
   if (isTauri) {
     const b64 = await invoke<string>("get_photo_jpeg", { photoId: p.id, maxEdge: 1600 });
     const bin = atob(b64);
@@ -60,13 +60,10 @@ export async function photoJpegBytes(p: { id: number; thumbAbs: string | null })
     for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
     return bytes;
   }
-  const url = (p.thumbAbs ?? "").replace("/640/480", "/1200/900");
-  const res = await fetch(url);
-  if (!res.ok) throw new Error("画像を取得できませんでした");
-  return new Uint8Array(await res.arrayBuffer());
+  return webPhotoJpegBytes(p.id);
 }
 
-/** PDF保存。Tauriは保存ダイアログ→書き込み、デモはブラウザダウンロード。falseはキャンセル */
+/** PDF保存。Tauriは保存ダイアログ→書き込み、ブラウザはダウンロード。falseはキャンセル */
 export async function savePdf(fileName: string, bytes: Uint8Array): Promise<boolean> {
   if (isTauri) {
     const { save } = await import("@tauri-apps/plugin-dialog");
@@ -84,7 +81,6 @@ export async function savePdf(fileName: string, bytes: Uint8Array): Promise<bool
     return true;
   }
   const blob = new Blob([bytes.buffer as ArrayBuffer], { type: "application/pdf" });
-  console.log(`[demo] PDF生成: ${fileName} (${bytes.length} bytes)`);
   const a = document.createElement("a");
   a.href = URL.createObjectURL(blob);
   a.download = fileName;
