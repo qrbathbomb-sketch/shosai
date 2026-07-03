@@ -439,6 +439,60 @@ fn list_shiori(state: State<AppState>) -> CmdResult<Vec<ShioriOut>> {
     Ok(out)
 }
 
+/// PDF等の用途向けに、元写真(読み取りのみ)を最大max_edge pxへ縮小したJPEGをbase64で返す。
+#[tauri::command]
+fn get_photo_jpeg(state: State<AppState>, photo_id: i64, max_edge: u32) -> CmdResult<String> {
+    let (mount, rel, orientation): (String, String, Option<i64>) = {
+        let conn = state.conn.lock().map_err(err_str)?;
+        conn.query_row(
+            "SELECT v.last_mount_path, p.rel_path, p.orientation FROM photos p
+             JOIN volumes v ON v.id = p.volume_id WHERE p.id = ?1",
+            [photo_id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .map_err(|_| "写真が見つかりません".to_string())?
+    };
+    let abs = PathBuf::from(mount).join(rel);
+    if !abs.exists() {
+        return Err("元写真にアクセスできません(ドライブが外れていませんか?)".to_string());
+    }
+    let img = image::open(&abs).map_err(err_str)?;
+    let edge = max_edge.clamp(256, 3000);
+    let mut resized = if img.width().max(img.height()) > edge {
+        img.resize(edge, edge, image::imageops::FilterType::Triangle)
+    } else {
+        img
+    };
+    resized = match orientation.unwrap_or(1) {
+        2 => resized.fliph(),
+        3 => resized.rotate180(),
+        4 => resized.flipv(),
+        5 => resized.rotate90().fliph(),
+        6 => resized.rotate90(),
+        7 => resized.rotate270().fliph(),
+        8 => resized.rotate270(),
+        _ => resized,
+    };
+    let mut buf = Vec::new();
+    let mut cursor = std::io::Cursor::new(&mut buf);
+    let enc = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut cursor, 88);
+    resized.write_with_encoder(enc).map_err(err_str)?;
+    use base64::Engine;
+    Ok(base64::engine::general_purpose::STANDARD.encode(buf))
+}
+
+/// 書き出し: ユーザーがダイアログで明示選択したパスへ新規ファイルを書く。
+/// 元写真の保存領域への書き込みではない(安全原則の範囲内)。
+#[tauri::command]
+fn save_binary(path: String, data_base64: String) -> CmdResult<()> {
+    use base64::Engine;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(data_base64)
+        .map_err(err_str)?;
+    std::fs::write(&path, bytes).map_err(err_str)?;
+    Ok(())
+}
+
 #[tauri::command]
 fn triage_photo(state: State<AppState>, photo_id: i64, decision: String) -> CmdResult<()> {
     if !["keep", "later", "skip"].contains(&decision.as_str()) {
@@ -503,6 +557,8 @@ pub fn run() {
             pool_years,
             auto_select_batch,
             list_kept,
+            get_photo_jpeg,
+            save_binary,
             triage_photo,
             create_shiori,
             list_shiori

@@ -41,3 +41,45 @@ export function fileSrc(path: string): string {
   if (path.startsWith("http")) return path;
   return isTauri ? convertFileSrc(path) : path;
 }
+
+/** PDF用の高解像度画像バイト列。Tauriは元写真から1600px、デモは大きめのサンプルを取得 */
+export async function photoJpegBytes(p: { id: number; thumbAbs: string | null }): Promise<Uint8Array> {
+  if (isTauri) {
+    const b64 = await invoke<string>("get_photo_jpeg", { photoId: p.id, maxEdge: 1600 });
+    const bin = atob(b64);
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    return bytes;
+  }
+  const url = (p.thumbAbs ?? "").replace("/640/480", "/1200/900");
+  const res = await fetch(url);
+  if (!res.ok) throw new Error("画像を取得できませんでした");
+  return new Uint8Array(await res.arrayBuffer());
+}
+
+/** PDF保存。Tauriは保存ダイアログ→書き込み、デモはブラウザダウンロード。falseはキャンセル */
+export async function savePdf(fileName: string, bytes: Uint8Array): Promise<boolean> {
+  if (isTauri) {
+    const { save } = await import("@tauri-apps/plugin-dialog");
+    const path = await save({
+      defaultPath: fileName,
+      filters: [{ name: "PDF", extensions: ["pdf"] }],
+    });
+    if (!path) return false;
+    let bin = "";
+    const chunk = 0x8000;
+    for (let i = 0; i < bytes.length; i += chunk) {
+      bin += String.fromCharCode(...bytes.subarray(i, i + chunk));
+    }
+    await invoke("save_binary", { path, dataBase64: btoa(bin) });
+    return true;
+  }
+  const blob = new Blob([bytes.buffer as ArrayBuffer], { type: "application/pdf" });
+  console.log(`[demo] PDF生成: ${fileName} (${bytes.length} bytes)`);
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = fileName;
+  a.click();
+  URL.revokeObjectURL(a.href);
+  return true;
+}

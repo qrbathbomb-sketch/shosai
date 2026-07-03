@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { call, on, pickDirectory, fileSrc, isDemo } from "./backend";
+import { call, on, pickDirectory, fileSrc, isDemo, photoJpegBytes, savePdf } from "./backend";
 import "./App.css";
 
 type Overview = {
@@ -347,6 +347,34 @@ function App() {
     const list = await call<Photo[]>("list_kept");
     setKeptGrid(list);
     setView("kept");
+  };
+
+  const [exporting, setExporting] = useState(false);
+
+  const exportPdf = async (s: Shiori) => {
+    if (exporting) return;
+    setExporting(true);
+    setNotice(null);
+    try {
+      const { buildShioriPdf } = await import("./pdf");
+      const photos = [];
+      for (const p of s.photos) {
+        photos.push({ bytes: await photoJpegBytes(p) });
+      }
+      const bytes = await buildShioriPdf({
+        title: s.title,
+        note: s.note,
+        takenLabel: s.takenLabel,
+        photos,
+      });
+      const safe = s.title.replace(/[\\/:*?"<>|]/g, "_").slice(0, 40) || "しおり";
+      const ok = await savePdf(`しおり_${safe}.pdf`, bytes);
+      if (ok) setNotice("PDFを保存しました。印刷にも使えます。");
+    } catch (e) {
+      setNotice(`PDFの作成に失敗しました: ${e}`);
+    } finally {
+      setExporting(false);
+    }
   };
 
   // ---------- 画面 ----------
@@ -743,7 +771,11 @@ function App() {
         <h2 className="section-title">しおりができました</h2>
         <ShioriCard shiori={lastShiori} large />
         <p className="small gray">書斎の棚に収まりました。</p>
+        {notice && <p className="notice">{notice}</p>}
         <div className="actions-row">
+          <button className="btn outline" disabled={exporting} onClick={() => exportPdf(lastShiori)}>
+            {exporting ? "書き出し中…" : "PDFに保存"}
+          </button>
           <button className="btn outline" onClick={openLibrary}>
             書斎の棚を見る
           </button>
@@ -796,7 +828,11 @@ function App() {
     return (
       <main className="page center-page">
         <ShioriCard shiori={detail} large />
+        {notice && <p className="notice">{notice}</p>}
         <div className="actions-row">
+          <button className="btn outline" disabled={exporting} onClick={() => exportPdf(detail)}>
+            {exporting ? "書き出し中…" : "PDFに保存"}
+          </button>
           <button className="btn ghost" onClick={() => setView("library")}>
             棚に戻る
           </button>
