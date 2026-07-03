@@ -1,7 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { invoke, convertFileSrc } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
-import { open } from "@tauri-apps/plugin-dialog";
+import { call, on, pickDirectory, fileSrc, isDemo } from "./backend";
 import "./App.css";
 
 type Overview = {
@@ -102,8 +100,7 @@ function takenLabelOf(photos: Photo[]): string {
 }
 
 function thumbSrc(thumbAbs: string): string {
-  // devプレビュー(ブラウザ)ではhttp URLをそのまま使う
-  return thumbAbs.startsWith("http") ? thumbAbs : convertFileSrc(thumbAbs);
+  return fileSrc(thumbAbs);
 }
 
 /** しおり本体の表示(一覧カードと詳細で共用)。品質最重視の箇所 */
@@ -150,7 +147,7 @@ function App() {
   const [keptGrid, setKeptGrid] = useState<Photo[]>([]);
 
   const refreshOverview = useCallback(async (): Promise<Overview> => {
-    const ov = await invoke<Overview>("get_overview");
+    const ov = await call<Overview>("get_overview");
     setOverview(ov);
     return ov;
   }, []);
@@ -171,8 +168,7 @@ function App() {
 
   useEffect(() => {
     const unlisteners: Promise<() => void>[] = [
-      listen<Record<string, any>>("scan-event", (ev) => {
-        const p = ev.payload;
+      on("scan-event", (p: Record<string, any>) => {
         if ("Started" in p) {
           setScan((s) => ({ ...emptyScan, root: p.Started.root || s.root }));
         } else if ("Progress" in p) {
@@ -185,14 +181,14 @@ function App() {
           setScan((s) => ({ ...s, filesSeen: p.Finished.stats.files_seen }));
         }
       }),
-      listen<{ done: number; total: number }>("thumb-progress", (ev) => {
-        setScan((s) => ({ ...s, thumbDone: ev.payload.done, thumbTotal: ev.payload.total }));
+      on("thumb-progress", (p: { done: number; total: number }) => {
+        setScan((s) => ({ ...s, thumbDone: p.done, thumbTotal: p.total }));
       }),
-      listen<string>("scan-error", (ev) => {
-        setScan((s) => ({ ...s, error: ev.payload }));
+      on("scan-error", (p: string) => {
+        setScan((s) => ({ ...s, error: p }));
       }),
-      listen("scan-idle", async () => {
-        const ov = await invoke<Overview>("get_overview");
+      on("scan-idle", async () => {
+        const ov = await call<Overview>("get_overview");
         setOverview(ov);
         setScan((s) => ({ ...s, finished: true }));
       }),
@@ -203,15 +199,12 @@ function App() {
   }, []);
 
   const pickFolder = async () => {
-    const dir = await open({
-      directory: true,
-      title: "写真が入っているフォルダやドライブを選んでください",
-    });
-    if (typeof dir === "string" && dir) {
+    const dir = await pickDirectory();
+    if (dir) {
       setScan({ ...emptyScan, root: dir });
       setView("scanning");
       try {
-        await invoke("start_scan", { path: dir });
+        await call("start_scan", { path: dir });
       } catch (e) {
         setScan((s) => ({ ...s, error: String(e) }));
       }
@@ -220,7 +213,7 @@ function App() {
 
   const startBatch = async () => {
     setNotice(null);
-    const b = await invoke<Batch | null>("next_batch");
+    const b = await call<Batch | null>("next_batch");
     if (!b || b.photos.length === 0) {
       setNotice("今は発掘できる写真がありません。フォルダを追加するか、また今度お越しください。");
       setView("home");
@@ -236,7 +229,7 @@ function App() {
     if (!batch) return;
     const photo = batch.photos[focusIdx];
     try {
-      await invoke("triage_photo", { photoId: photo.id, decision });
+      await call("triage_photo", { photoId: photo.id, decision });
     } catch (e) {
       setNotice(String(e));
       return;
@@ -277,7 +270,7 @@ function App() {
     const title = folderMode || batch.subtitle || batch.title;
     const takenLabel = takenLabelOf(chosen);
     try {
-      const id = await invoke<number>("create_shiori", {
+      const id = await call<number>("create_shiori", {
         title,
         note,
         takenLabel,
@@ -299,14 +292,14 @@ function App() {
   };
 
   const openLibrary = async () => {
-    const list = await invoke<Shiori[]>("list_shiori");
+    const list = await call<Shiori[]>("list_shiori");
     setLibrary(list);
     setView("library");
   };
 
   const openPicker = async () => {
     setNotice(null);
-    const years = await invoke<{ year: string; count: number }[]>("pool_years");
+    const years = await call<{ year: string; count: number }[]>("pool_years");
     setPickYears(years);
     setSelYear(null);
     setKeyword("");
@@ -315,7 +308,7 @@ function App() {
 
   const startCustom = async () => {
     setNotice(null);
-    const b = await invoke<Batch | null>("custom_batch", {
+    const b = await call<Batch | null>("custom_batch", {
       year: selYear,
       keyword: keyword.trim() || null,
       limit: pickLimit,
@@ -334,7 +327,7 @@ function App() {
     setNotice(null);
     setView("autoLoading");
     try {
-      const b = await invoke<Batch | null>("auto_select_batch", { year: null, limit: 10 });
+      const b = await call<Batch | null>("auto_select_batch", { year: null, limit: 10 });
       if (!b || b.photos.length === 0) {
         setNotice("選べる写真がまだありません。先に読み取りを済ませてください。");
         setView("home");
@@ -351,7 +344,7 @@ function App() {
   };
 
   const openKept = async () => {
-    const list = await invoke<Photo[]>("list_kept");
+    const list = await call<Photo[]>("list_kept");
     setKeptGrid(list);
     setView("kept");
   };
@@ -372,8 +365,15 @@ function App() {
           あなたの記録と作品に変えていくソフトです。
         </p>
         <button className="btn primary big" onClick={pickFolder}>
-          写真が入っている場所を選ぶ
+          {isDemo ? "デモ写真で試してみる" : "写真が入っている場所を選ぶ"}
         </button>
+        {isDemo && (
+          <p className="small gray">
+            これは体験デモです。写真はサンプル画像に置き換わっています。
+            <br />
+            実際のアプリは、お使いのパソコンの中の写真をその場で読み取ります(送信はしません)。
+          </p>
+        )}
         <div className="safety card">
           <p className="safety-title">だいじなお約束</p>
           <ul>
@@ -422,7 +422,7 @@ function App() {
         ) : (
           <>
             <p className="small gray">途中でやめても大丈夫です。次に開いたとき、続きから再開します。</p>
-            <button className="btn ghost" onClick={() => invoke("cancel_scan")}>
+            <button className="btn ghost" onClick={() => call("cancel_scan")}>
               読み取りを中断する
             </button>
           </>
@@ -625,7 +625,7 @@ function App() {
           {batch.photos.map((p) => (
             <figure className="grid-item" key={p.id}>
               {p.thumbAbs ? (
-                <img src={convertFileSrc(p.thumbAbs)} alt={p.fileName} loading="lazy" />
+                <img src={thumbSrc(p.thumbAbs)} alt={p.fileName} loading="lazy" />
               ) : (
                 <div className="noimg">画像なし</div>
               )}
@@ -654,7 +654,7 @@ function App() {
         </p>
         <div className="focus-stage">
           {p.thumbAbs ? (
-            <img className="focus-img" src={convertFileSrc(p.thumbAbs)} alt={p.fileName} />
+            <img className="focus-img" src={thumbSrc(p.thumbAbs)} alt={p.fileName} />
           ) : (
             <div className="noimg big-noimg">画像を表示できません</div>
           )}
@@ -697,7 +697,7 @@ function App() {
                 onClick={() => toggleSelect(p.id)}
               >
                 {p.thumbAbs ? (
-                  <img src={convertFileSrc(p.thumbAbs)} alt={p.fileName} />
+                  <img src={thumbSrc(p.thumbAbs)} alt={p.fileName} />
                 ) : (
                   <div className="noimg">画像なし</div>
                 )}
