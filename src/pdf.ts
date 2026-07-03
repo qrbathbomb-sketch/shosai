@@ -70,12 +70,8 @@ function drawCentered(page: PDFPage, text: string, y: number, font: PDFFont, siz
   page.drawText(text, { x: (PAGE_W - w) / 2, y, size, font, color });
 }
 
-export async function buildShioriPdf(s: PdfShiori): Promise<Uint8Array> {
-  const doc = await PDFDocument.create();
-  doc.registerFontkit(fontkit);
-  const fontBytes = await fetch(fontUrl).then((r) => r.arrayBuffer());
-  const font = await doc.embedFont(fontBytes, { subset: true });
-
+/** しおり1枚を1ページとして描画する(単票PDF・写真集の両方で共用) */
+async function drawShioriPage(doc: PDFDocument, font: PDFFont, s: PdfShiori) {
   const page = doc.addPage([PAGE_W, PAGE_H]);
   page.drawRectangle({ x: 0, y: 0, width: PAGE_W, height: PAGE_H, color: PAPER });
 
@@ -88,39 +84,19 @@ export async function buildShioriPdf(s: PdfShiori): Promise<Uint8Array> {
     images.push(await embedImage(doc, p.bytes));
   }
   if (images.length === 1) {
-    drawFitted(page, images[0], {
-      x: MARGIN,
-      y: photosTop - photoAreaH,
-      w: CONTENT_W,
-      h: photoAreaH,
-    });
+    drawFitted(page, images[0], { x: MARGIN, y: photosTop - photoAreaH, w: CONTENT_W, h: photoAreaH });
   } else if (images.length === 2) {
     const w = (CONTENT_W - gap) / 2;
     images.forEach((img, i) => {
-      drawFitted(page, img, {
-        x: MARGIN + i * (w + gap),
-        y: photosTop - photoAreaH,
-        w,
-        h: photoAreaH,
-      });
+      drawFitted(page, img, { x: MARGIN + i * (w + gap), y: photosTop - photoAreaH, w, h: photoAreaH });
     });
   } else if (images.length >= 3) {
     const bigW = CONTENT_W * 0.62;
     const smallW = CONTENT_W - bigW - gap;
     const smallH = (photoAreaH - gap) / 2;
     drawFitted(page, images[0], { x: MARGIN, y: photosTop - photoAreaH, w: bigW, h: photoAreaH });
-    drawFitted(page, images[1], {
-      x: MARGIN + bigW + gap,
-      y: photosTop - smallH,
-      w: smallW,
-      h: smallH,
-    });
-    drawFitted(page, images[2], {
-      x: MARGIN + bigW + gap,
-      y: photosTop - photoAreaH,
-      w: smallW,
-      h: smallH,
-    });
+    drawFitted(page, images[1], { x: MARGIN + bigW + gap, y: photosTop - smallH, w: smallW, h: smallH });
+    drawFitted(page, images[2], { x: MARGIN + bigW + gap, y: photosTop - photoAreaH, w: smallW, h: smallH });
   }
 
   // 文字エリア
@@ -140,6 +116,51 @@ export async function buildShioriPdf(s: PdfShiori): Promise<Uint8Array> {
       y -= 20;
     }
   }
+}
 
+async function loadFont(doc: PDFDocument): Promise<PDFFont> {
+  doc.registerFontkit(fontkit);
+  const fontBytes = await fetch(fontUrl).then((r) => r.arrayBuffer());
+  return doc.embedFont(fontBytes, { subset: true });
+}
+
+export async function buildShioriPdf(s: PdfShiori): Promise<Uint8Array> {
+  const doc = await PDFDocument.create();
+  const font = await loadFont(doc);
+  await drawShioriPage(doc, font, s);
+  return doc.save();
+}
+
+export type PhotoBook = {
+  bookTitle: string;
+  subtitle: string; // 例: 「12枚のしおり · 2009年〜2024年」
+  shioris: PdfShiori[];
+};
+
+/** 書斎の棚のしおりを1冊の写真集に。表紙 + しおりごとに1ページ */
+export async function buildPhotoBookPdf(book: PhotoBook): Promise<Uint8Array> {
+  const doc = await PDFDocument.create();
+  const font = await loadFont(doc);
+
+  // 表紙
+  const cover = doc.addPage([PAGE_W, PAGE_H]);
+  cover.drawRectangle({ x: 0, y: 0, width: PAGE_W, height: PAGE_H, color: PAPER });
+  cover.drawLine({
+    start: { x: MARGIN, y: PAGE_H * 0.62 },
+    end: { x: PAGE_W - MARGIN, y: PAGE_H * 0.62 },
+    thickness: 0.8,
+    color: GRAY,
+  });
+  let cy = PAGE_H * 0.56;
+  for (const line of wrapText(book.bookTitle, font, 24, CONTENT_W)) {
+    drawCentered(cover, line, cy, font, 24, INK);
+    cy -= 34;
+  }
+  if (book.subtitle) drawCentered(cover, book.subtitle, cy - 6, font, 11, GRAY);
+
+  // 中身
+  for (const s of book.shioris) {
+    await drawShioriPage(doc, font, s);
+  }
   return doc.save();
 }

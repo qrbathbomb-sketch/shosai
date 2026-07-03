@@ -398,6 +398,40 @@ function App() {
     }
   };
 
+  const exportBook = async (shioris: Shiori[]) => {
+    if (exporting || shioris.length === 0) return;
+    setExporting(true);
+    setNotice("写真集を作っています…");
+    try {
+      const { buildPhotoBookPdf } = await import("./pdf");
+      const pdfShioris = [];
+      for (const s of shioris) {
+        const photos = [];
+        for (const p of s.photos) photos.push({ bytes: await photoJpegBytes(p) });
+        pdfShioris.push({ title: s.title, note: s.note, takenLabel: s.takenLabel, photos });
+      }
+      // 副題: しおり枚数と年の範囲
+      const yrs = shioris
+        .map((s) => s.takenLabel.match(/\d{4}/)?.[0])
+        .filter(Boolean)
+        .sort() as string[];
+      const span =
+        yrs.length > 0
+          ? yrs[0] === yrs[yrs.length - 1]
+            ? `${yrs[0]}年`
+            : `${yrs[0]}年〜${yrs[yrs.length - 1]}年`
+          : "";
+      const subtitle = `${shioris.length}枚のしおり${span ? ` ・ ${span}` : ""}`;
+      const bytes = await buildPhotoBookPdf({ bookTitle: "わたしの写真集", subtitle, shioris: pdfShioris });
+      const ok = await savePdf("写真集.pdf", bytes);
+      setNotice(ok ? "写真集を保存しました。印刷して手元に置けます。" : null);
+    } catch (e) {
+      setNotice(`写真集の作成に失敗しました: ${e}`);
+    } finally {
+      setExporting(false);
+    }
+  };
+
   // ---------- 画面 ----------
 
   if (view === "loading") {
@@ -837,22 +871,35 @@ function App() {
         {library.length === 0 ? (
           <p className="lead center">まだしおりがありません。「今日の発掘」から作れます。</p>
         ) : (
-          <div className="library-grid">
-            {library.map((s) => (
-              <div
-                key={s.id}
-                className="library-item"
-                onClick={() => {
-                  setDetail(s);
-                  setView("shioriDetail");
-                }}
-              >
-                <ShioriCard shiori={s} />
-              </div>
-            ))}
-          </div>
+          <>
+            {library.length >= 2 && (
+              <p className="small gray center book-hint">
+                たまったしおりを、1冊の写真集としてPDFにできます。
+              </p>
+            )}
+            <div className="library-grid">
+              {library.map((s) => (
+                <div
+                  key={s.id}
+                  className="library-item"
+                  onClick={() => {
+                    setDetail(s);
+                    setView("shioriDetail");
+                  }}
+                >
+                  <ShioriCard shiori={s} />
+                </div>
+              ))}
+            </div>
+          </>
         )}
+        {notice && <p className="notice">{notice}</p>}
         <div className="actions-row">
+          {library.length >= 2 && (
+            <button className="btn primary" disabled={exporting} onClick={() => exportBook(library)}>
+              {exporting ? "作成中…" : "写真集にする (PDF)"}
+            </button>
+          )}
           <button className="btn ghost" onClick={() => setView("home")}>
             戻る
           </button>
