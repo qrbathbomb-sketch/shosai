@@ -18,6 +18,39 @@ struct AppState {
     cancel: Arc<AtomicBool>,
 }
 
+/// サムネイル未生成の present 画像を背景生成する(中断可)。
+/// 走査が途中で終わっていても、アプリを開けば残りが埋まる。
+fn generate_missing_thumbs(
+    conn: &rusqlite::Connection,
+    data_dir: &std::path::Path,
+    cancel: &Arc<AtomicBool>,
+    app: &tauri::AppHandle,
+) -> shosai_core::Result<()> {
+    let rows: Vec<(i64, String, String, Option<i64>)> = {
+        let mut stmt = conn.prepare(
+            "SELECT p.id, v.last_mount_path, p.rel_path, p.orientation
+             FROM photos p JOIN volumes v ON v.id = p.volume_id
+             WHERE p.status='present' AND p.kind='image' AND p.thumb_path IS NULL",
+        )?;
+        let it = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?;
+        it.collect::<std::result::Result<Vec<_>, _>>()?
+    };
+    let total = rows.len();
+    for (i, (id, mount, rel, orientation)) in rows.into_iter().enumerate() {
+        if cancel.load(Ordering::Relaxed) {
+            break;
+        }
+        let abs = PathBuf::from(&mount).join(&rel);
+        if let Ok(thumb_rel) = thumb::generate(&abs, orientation, data_dir, id) {
+            let _ = db::set_thumb_path(conn, id, &thumb_rel);
+        }
+        if (i + 1) % 20 == 0 || i + 1 == total {
+            let _ = app.emit("thumb-progress", serde_json::json!({"done": i + 1, "total": total}));
+        }
+    }
+    Ok(())
+}
+
 /// おまかせセレクト用スコア(連写・風景・顔)をバックグラウンドで全写真に付与する。
 /// 少しずつ処理して score-progress を通知。中断可。重い顔検出があるので背景で行う。
 fn run_scoring(
@@ -67,6 +100,8 @@ fn spawn_scoring(app: &tauri::AppHandle, state: &AppState) {
     let app = app.clone();
     std::thread::spawn(move || {
         if let Ok(conn) = db::open(&db_path) {
+            // 途中終了で残ったサムネイルを埋めてから採点(おまかせが全写真から選べる)
+            let _ = generate_missing_thumbs(&conn, &data_dir, &cancel, &app);
             let _ = run_scoring(&conn, &data_dir, &cancel, &app);
         }
         scoring.store(false, Ordering::SeqCst);
@@ -203,31 +238,8 @@ fn start_scan(app: tauri::AppHandle, state: State<AppState>, path: String) -> Cm
                 let _ = app2.emit("scan-event", &ev);
             })?;
 
-            // 走査後、サムネイル未生成分を背景生成(中断可)
-            let rows: Vec<(i64, String, String, Option<i64>)> = {
-                let mut stmt = conn.prepare(
-                    "SELECT p.id, v.last_mount_path, p.rel_path, p.orientation
-                     FROM photos p JOIN volumes v ON v.id = p.volume_id
-                     WHERE p.status='present' AND p.kind='image' AND p.thumb_path IS NULL",
-                )?;
-                let it = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?;
-                it.collect::<std::result::Result<Vec<_>, _>>()?
-            };
-            let total = rows.len();
-            for (i, (id, mount, rel, orientation)) in rows.into_iter().enumerate() {
-                if cancel.load(Ordering::Relaxed) {
-                    break;
-                }
-                let abs = PathBuf::from(&mount).join(&rel);
-                if let Ok(thumb_rel) = thumb::generate(&abs, orientation, &data_dir, id) {
-                    let _ = db::set_thumb_path(&conn, id, &thumb_rel);
-                }
-                if (i + 1) % 20 == 0 || i + 1 == total {
-                    let _ = app.emit("thumb-progress", serde_json::json!({"done": i + 1, "total": total}));
-                }
-            }
-
-            // サムネイル後、おまかせセレクト用スコアを背景採点(中断可)
+            // 走査後、サムネイル未生成分を背景生成 → おまかせ用スコアを背景採点(中断可)
+            generate_missing_thumbs(&conn, &data_dir, &cancel, &app)?;
             run_scoring(&conn, &data_dir, &cancel, &app)?;
             Ok(())
         })();

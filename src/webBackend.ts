@@ -403,9 +403,38 @@ async function startScan() {
 
 let scoring = false;
 
+/** ライブなハンドルがある時だけ、未生成サムネイルを埋める(権限プロンプトは出さない)。
+ *  走査が途中で終わっていても、同一セッション中なら残りが埋まる。 */
+async function generateMissingThumbs() {
+  if (!rootHandle) return; // 権限プロンプトを避けるため、メモリにハンドルが無ければ何もしない
+  const d = await db();
+  const pending = (await allPhotos()).filter(
+    (p) => p.status === "present" && p.kind === "image" && !p.hasThumb
+  );
+  const total = pending.length;
+  for (let i = 0; i < pending.length; i++) {
+    if (cancelFlag) break;
+    const rec = pending[i];
+    const file = await fileOf(rec);
+    if (file) {
+      const blob = await makeThumbBlob(file, 512);
+      if (blob) {
+        await d.put("thumbs", { photoId: rec.id, blob });
+        rec.hasThumb = true;
+        await d.put("photos", rec);
+      }
+    }
+    if ((i + 1) % 10 === 0 || i + 1 === total) {
+      emit("thumb-progress", { done: i + 1, total });
+      await new Promise((r) => setTimeout(r, 0));
+    }
+  }
+}
+
 /** 連写+風景スコアを全写真に少しずつ付与。score-progressを通知。中断可 */
 async function runScoring() {
   const d = await db();
+  await generateMissingThumbs();
   await computeBursts();
   const scorable = (await allPhotos()).filter(
     (p) => p.status === "present" && p.kind === "image" && p.hasThumb
